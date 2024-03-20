@@ -135,7 +135,10 @@ impl TxEnvelope {
     /// Return the length of the inner txn, __without a type byte__.
     pub fn inner_length(&self) -> usize {
         match self {
-            Self::Legacy(t) => t.tx().fields_len() + t.signature().rlp_vrs_len(),
+            Self::Legacy(t) => {
+                let payload_length = t.tx().fields_len() + t.signature().rlp_vrs_len();
+                Header { list: true, payload_length }.length() + payload_length
+            }
             Self::Eip2930(t) => {
                 let payload_length = t.tx().fields_len() + t.signature().rlp_vrs_len();
                 Header { list: true, payload_length }.length() + payload_length
