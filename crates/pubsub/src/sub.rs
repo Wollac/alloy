@@ -94,12 +94,13 @@ pub enum SubscriptionItem<T> {
 
 impl<T: DeserializeOwned> From<Box<RawValue>> for SubscriptionItem<T> {
     fn from(value: Box<RawValue>) -> Self {
-        if let Ok(item) = serde_json::from_str(value.get()) {
-            SubscriptionItem::Item(item)
-        } else {
-            trace!(value = value.get(), "Received unexpected value in subscription.");
-            SubscriptionItem::Other(value)
-        }
+        serde_json::from_str(value.get()).map_or_else(
+            |_| {
+                trace!(value = value.get(), "Received unexpected value in subscription.");
+                Self::Other(value)
+            },
+            |item| Self::Item(item),
+        )
     }
 }
 
@@ -112,7 +113,7 @@ impl<T: DeserializeOwned> From<Box<RawValue>> for SubscriptionItem<T> {
 /// - The [`Subscription::recv_any`] and its variants will yield unexpected types as
 ///   [`SubscriptionItem::Other`].
 /// - The [`Subscription::recv_result`] and its variants will attempt to deserialize the
-///  notifications and yield the `serde_json::Result` of the deserialization.
+///   notifications and yield the `serde_json::Result` of the deserialization.
 #[derive(Debug)]
 #[must_use]
 pub struct Subscription<T> {
@@ -133,7 +134,6 @@ impl<T> Subscription<T> {
     }
 
     /// Convert the subscription into its inner [`RawSubscription`].
-    #[allow(clippy::missing_const_for_fn)] // erroneous lint
     pub fn into_raw(self) -> RawSubscription {
         self.inner
     }

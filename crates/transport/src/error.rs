@@ -12,7 +12,7 @@ pub type TransportResult<T, ErrResp = Box<RawValue>> = RpcResult<T, TransportErr
 /// Transport error.
 ///
 /// All transport errors are wrapped in this enum.
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum TransportErrorKind {
     /// Missing batch response.
@@ -31,9 +31,9 @@ pub enum TransportErrorKind {
     #[error("subscriptions are not available on this provider")]
     PubsubUnavailable,
 
-    /// Transaction confirmed but `get_transaction_receipt` returned `None`.
-    #[error("transaction confirmed but receipt returned was null")]
-    MissingReceipt,
+    /// HTTP Error with code and body
+    #[error("{0}")]
+    HttpError(#[from] HttpError),
 
     /// Custom error.
     #[error("{0}")]
@@ -72,8 +72,41 @@ impl TransportErrorKind {
         RpcError::Transport(Self::PubsubUnavailable)
     }
 
-    /// Instantiate a new `TransportError::MissingReceipt`.
-    pub const fn missing_receipt() -> TransportError {
-        RpcError::Transport(Self::MissingReceipt)
+    /// Instantiate a new `TransportError::HttpError`.
+    pub const fn http_error(status: u16, body: String) -> TransportError {
+        RpcError::Transport(Self::HttpError(HttpError { status, body }))
+    }
+
+    /// Analyzes the [TransportErrorKind] and decides if the request should be retried based on the
+    /// variant.
+    pub fn is_retry_err(&self) -> bool {
+        match self {
+            // Missing batch response errors can be retried.
+            Self::MissingBatchResponse(_) => true,
+            Self::HttpError(http_err) => http_err.is_rate_limit_err(),
+            Self::Custom(err) => {
+                let msg = err.to_string();
+                msg.contains("429 Too Many Requests")
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Type for holding HTTP errors such as 429 rate limit error.
+#[derive(Debug, thiserror::Error)]
+#[error("HTTP error {status} with body: {body}")]
+pub struct HttpError {
+    pub status: u16,
+    pub body: String,
+}
+
+impl HttpError {
+    /// Checks the `status` to determine whether the request should be retried.
+    pub const fn is_rate_limit_err(&self) -> bool {
+        if self.status == 429 {
+            return true;
+        }
+        false
     }
 }

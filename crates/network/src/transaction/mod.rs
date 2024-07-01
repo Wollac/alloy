@@ -1,5 +1,7 @@
 mod builder;
-pub use builder::{BuilderResult, TransactionBuilder, TransactionBuilderError};
+pub use builder::{
+    BuildResult, TransactionBuilder, TransactionBuilderError, UnbuiltTransactionError,
+};
 
 mod signer;
-pub use signer::{NetworkSigner, TxSigner, TxSignerSync};
+pub use signer::{NetworkWallet, TxSigner, TxSignerSync};

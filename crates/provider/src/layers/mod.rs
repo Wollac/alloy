@@ -1,12 +1,11 @@
-//! Provider layers.
-//!
-//! Layers decorate a `Provider`, transforming various inputs and outputs of the root provider,
-//! depending on the layers used.
-mod signer;
-pub use signer::{SignerLayer, SignerProvider};
+//! Useful layer implementations for the provider. Currently this
+//! module contains the `AnvilLayer`, `AnvilProvider` and `ChainLayer`
+//! types.
 
-mod nonce;
-pub use nonce::{ManagedNonceLayer, ManagedNonceProvider};
+#[cfg(any(test, feature = "anvil-node"))]
+mod anvil;
+#[cfg(any(test, feature = "anvil-node"))]
+pub use anvil::{AnvilLayer, AnvilProvider};
 
-mod gas;
-pub use gas::{GasEstimatorLayer, GasEstimatorProvider};
+mod chain;
+pub use chain::ChainLayer;

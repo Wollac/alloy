@@ -1,16 +1,16 @@
 use crate::{
-    BuilderResult, Ethereum, Network, NetworkSigner, TransactionBuilder, TransactionBuilderError,
+    BuildResult, Ethereum, Network, NetworkWallet, TransactionBuilder, TransactionBuilderError,
 };
-use alloy_consensus::{TxEip1559, TxEip2930, TxEip4844, TxEip4844Variant, TxLegacy};
-use alloy_primitives::{Address, TxKind, U256};
-use alloy_rpc_types::request::TransactionRequest;
+use alloy_consensus::{BlobTransactionSidecar, TxType, TypedTransaction};
+use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
+use alloy_rpc_types_eth::{request::TransactionRequest, AccessList};
 
-impl TransactionBuilder<Ethereum> for alloy_rpc_types::TransactionRequest {
-    fn chain_id(&self) -> Option<alloy_primitives::ChainId> {
+impl TransactionBuilder<Ethereum> for TransactionRequest {
+    fn chain_id(&self) -> Option<ChainId> {
         self.chain_id
     }
 
-    fn set_chain_id(&mut self, chain_id: alloy_primitives::ChainId) {
+    fn set_chain_id(&mut self, chain_id: ChainId) {
         self.chain_id = Some(chain_id);
     }
 
@@ -22,16 +22,12 @@ impl TransactionBuilder<Ethereum> for alloy_rpc_types::TransactionRequest {
         self.nonce = Some(nonce);
     }
 
-    fn input(&self) -> Option<&alloy_primitives::Bytes> {
+    fn input(&self) -> Option<&Bytes> {
         self.input.input()
     }
 
-    fn set_input(&mut self, input: alloy_primitives::Bytes) {
-        self.input.input = Some(input);
-    }
-
-    fn to(&self) -> Option<alloy_primitives::TxKind> {
-        self.to.map(TxKind::Call).or(Some(TxKind::Create))
+    fn set_input<T: Into<Bytes>>(&mut self, input: T) {
+        self.input.input = Some(input.into());
     }
 
     fn from(&self) -> Option<Address> {
@@ -42,198 +38,312 @@ impl TransactionBuilder<Ethereum> for alloy_rpc_types::TransactionRequest {
         self.from = Some(from);
     }
 
-    fn set_to(&mut self, to: alloy_primitives::TxKind) {
-        match to {
-            TxKind::Create => self.to = None,
-            TxKind::Call(to) => self.to = Some(to),
-        }
+    fn kind(&self) -> Option<TxKind> {
+        self.to
     }
 
-    fn value(&self) -> Option<alloy_primitives::U256> {
+    fn clear_kind(&mut self) {
+        self.to = None;
+    }
+
+    fn set_kind(&mut self, kind: TxKind) {
+        self.to = Some(kind);
+    }
+
+    fn value(&self) -> Option<U256> {
         self.value
     }
 
-    fn set_value(&mut self, value: alloy_primitives::U256) {
+    fn set_value(&mut self, value: U256) {
         self.value = Some(value)
     }
 
-    fn gas_price(&self) -> Option<U256> {
+    fn gas_price(&self) -> Option<u128> {
         self.gas_price
     }
 
-    fn set_gas_price(&mut self, gas_price: U256) {
+    fn set_gas_price(&mut self, gas_price: u128) {
         self.gas_price = Some(gas_price);
     }
 
-    fn max_fee_per_gas(&self) -> Option<U256> {
+    fn max_fee_per_gas(&self) -> Option<u128> {
         self.max_fee_per_gas
     }
 
-    fn set_max_fee_per_gas(&mut self, max_fee_per_gas: U256) {
+    fn set_max_fee_per_gas(&mut self, max_fee_per_gas: u128) {
         self.max_fee_per_gas = Some(max_fee_per_gas);
     }
 
-    fn max_priority_fee_per_gas(&self) -> Option<U256> {
+    fn max_priority_fee_per_gas(&self) -> Option<u128> {
         self.max_priority_fee_per_gas
     }
 
-    fn set_max_priority_fee_per_gas(&mut self, max_priority_fee_per_gas: U256) {
+    fn set_max_priority_fee_per_gas(&mut self, max_priority_fee_per_gas: u128) {
         self.max_priority_fee_per_gas = Some(max_priority_fee_per_gas);
     }
 
-    fn max_fee_per_blob_gas(&self) -> Option<U256> {
+    fn max_fee_per_blob_gas(&self) -> Option<u128> {
         self.max_fee_per_blob_gas
     }
 
-    fn set_max_fee_per_blob_gas(&mut self, max_fee_per_blob_gas: U256) {
+    fn set_max_fee_per_blob_gas(&mut self, max_fee_per_blob_gas: u128) {
         self.max_fee_per_blob_gas = Some(max_fee_per_blob_gas)
     }
 
-    fn gas_limit(&self) -> Option<U256> {
+    fn gas_limit(&self) -> Option<u128> {
         self.gas
     }
 
-    fn set_gas_limit(&mut self, gas_limit: U256) {
+    fn set_gas_limit(&mut self, gas_limit: u128) {
         self.gas = Some(gas_limit);
     }
 
-    fn build_unsigned(self) -> BuilderResult<<Ethereum as Network>::UnsignedTx> {
-        match (
-            self.gas_price.as_ref(),
-            self.max_fee_per_gas.as_ref(),
-            self.access_list.as_ref(),
-            self.max_fee_per_blob_gas.as_ref(),
-            self.blob_versioned_hashes.as_ref(),
-            self.sidecar.as_ref(),
-        ) {
-            // Legacy transaction
-            (Some(_), None, None, None, None, None) => build_legacy(self).map(Into::into),
-            // EIP-2930
-            // If only accesslist is set, and there are no EIP-1559 fees
-            (_, None, Some(_), None, None, None) => build_2930(self).map(Into::into),
-            // EIP-1559
-            // If EIP-4844 fields are missing
-            (None, _, _, None, None, None) => build_1559(self).map(Into::into),
-            // EIP-4844
-            // All blob fields required
-            (None, _, _, Some(_), Some(_), Some(_)) => {
-                build_4844(self).map(TxEip4844Variant::from).map(Into::into)
-            }
-            _ => build_legacy(self).map(Into::into),
+    fn access_list(&self) -> Option<&AccessList> {
+        self.access_list.as_ref()
+    }
+
+    fn set_access_list(&mut self, access_list: AccessList) {
+        self.access_list = Some(access_list);
+    }
+
+    fn blob_sidecar(&self) -> Option<&BlobTransactionSidecar> {
+        self.sidecar.as_ref()
+    }
+
+    fn set_blob_sidecar(&mut self, sidecar: BlobTransactionSidecar) {
+        self.sidecar = Some(sidecar);
+        self.populate_blob_hashes();
+    }
+
+    fn complete_type(&self, ty: TxType) -> Result<(), Vec<&'static str>> {
+        match ty {
+            TxType::Legacy => self.complete_legacy(),
+            TxType::Eip2930 => self.complete_2930(),
+            TxType::Eip1559 => self.complete_1559(),
+            TxType::Eip4844 => self.complete_4844(),
         }
     }
 
-    async fn build<S: NetworkSigner<Ethereum>>(
+    fn can_submit(&self) -> bool {
+        // value and data may be None. If they are, they will be set to default.
+        // gas fields and nonce may be None, if they are, they will be populated
+        // with default values by the RPC server
+        self.from.is_some()
+    }
+
+    fn can_build(&self) -> bool {
+        // value and data may be none. If they are, they will be set to default
+        // values.
+
+        // chain_id and from may be none.
+        let common = self.gas.is_some() && self.nonce.is_some();
+
+        let legacy = self.gas_price.is_some();
+        let eip2930 = legacy && self.access_list().is_some();
+
+        let eip1559 = self.max_fee_per_gas.is_some() && self.max_priority_fee_per_gas.is_some();
+
+        let eip4844 = eip1559 && self.sidecar.is_some() && self.to.is_some();
+        common && (legacy || eip2930 || eip1559 || eip4844)
+    }
+
+    #[doc(alias = "output_transaction_type")]
+    fn output_tx_type(&self) -> TxType {
+        self.preferred_type()
+    }
+
+    #[doc(alias = "output_transaction_type_checked")]
+    fn output_tx_type_checked(&self) -> Option<TxType> {
+        self.buildable_type()
+    }
+
+    fn prep_for_submission(&mut self) {
+        self.transaction_type = Some(self.preferred_type() as u8);
+        self.trim_conflicting_keys();
+        self.populate_blob_hashes();
+    }
+
+    fn build_unsigned(self) -> BuildResult<TypedTransaction, Ethereum> {
+        if let Err((tx_type, missing)) = self.missing_keys() {
+            return Err(TransactionBuilderError::InvalidTransactionRequest(tx_type, missing)
+                .into_unbuilt(self));
+        }
+        Ok(self.build_typed_tx().expect("checked by missing_keys"))
+    }
+
+    async fn build<W: NetworkWallet<Ethereum>>(
         self,
-        signer: &S,
-    ) -> BuilderResult<<Ethereum as Network>::TxEnvelope> {
-        Ok(signer.sign_transaction(self.build_unsigned()?).await?)
+        wallet: &W,
+    ) -> Result<<Ethereum as Network>::TxEnvelope, TransactionBuilderError<Ethereum>> {
+        Ok(wallet.sign_request(self).await?)
     }
 }
 
-/// Build a legacy transaction.
-fn build_legacy(request: TransactionRequest) -> Result<TxLegacy, TransactionBuilderError> {
-    Ok(TxLegacy {
-        chain_id: request.chain_id,
-        nonce: request.nonce.ok_or_else(|| TransactionBuilderError::MissingKey("nonce"))?,
-        gas_price: request
-            .gas_price
-            .ok_or_else(|| TransactionBuilderError::MissingKey("gas_price"))?
-            .to(),
-        gas_limit: request
-            .gas
-            .ok_or_else(|| TransactionBuilderError::MissingKey("gas_limit"))?
-            .to(),
-        to: request.to.into(),
-        value: request.value.unwrap_or_default(),
-        input: request.input.into_input().unwrap_or_default(),
-    })
-}
+#[cfg(test)]
+mod tests {
+    use crate::{TransactionBuilder, TransactionBuilderError};
+    use alloy_consensus::{BlobTransactionSidecar, TxEip1559, TxType, TypedTransaction};
+    use alloy_primitives::Address;
+    use alloy_rpc_types_eth::{AccessList, TransactionRequest};
 
-/// Build an EIP-1559 transaction.
-fn build_1559(request: TransactionRequest) -> Result<TxEip1559, TransactionBuilderError> {
-    Ok(TxEip1559 {
-        chain_id: request.chain_id.unwrap_or(1),
-        nonce: request.nonce.ok_or_else(|| TransactionBuilderError::MissingKey("nonce"))?,
-        max_priority_fee_per_gas: request
-            .max_priority_fee_per_gas
-            .ok_or_else(|| TransactionBuilderError::MissingKey("max_priority_fee_per_gas"))?
-            .to(),
-        max_fee_per_gas: request
-            .max_fee_per_gas
-            .ok_or_else(|| TransactionBuilderError::MissingKey("max_fee_per_gas"))?
-            .to(),
-        gas_limit: request
-            .gas
-            .ok_or_else(|| TransactionBuilderError::MissingKey("gas_limit"))?
-            .to(),
-        to: request.to.into(),
-        value: request.value.unwrap_or_default(),
-        input: request.input.into_input().unwrap_or_default(),
-        access_list: convert_access_list(request.access_list.unwrap_or_default()),
-    })
-}
+    #[test]
+    fn from_eip1559_to_tx_req() {
+        let tx = TxEip1559 {
+            chain_id: 1,
+            nonce: 0,
+            gas_limit: 21_000,
+            to: Address::ZERO.into(),
+            max_priority_fee_per_gas: 20e9 as u128,
+            max_fee_per_gas: 20e9 as u128,
+            ..Default::default()
+        };
+        let tx_req: TransactionRequest = tx.into();
+        tx_req.build_unsigned().unwrap();
+    }
 
-/// Build an EIP-2930 transaction.
-fn build_2930(request: TransactionRequest) -> Result<TxEip2930, TransactionBuilderError> {
-    Ok(TxEip2930 {
-        chain_id: request.chain_id.unwrap_or(1),
-        nonce: request.nonce.ok_or_else(|| TransactionBuilderError::MissingKey("nonce"))?,
-        gas_price: request
-            .gas_price
-            .ok_or_else(|| TransactionBuilderError::MissingKey("gas_price"))?
-            .to(),
-        gas_limit: request
-            .gas
-            .ok_or_else(|| TransactionBuilderError::MissingKey("gas_limit"))?
-            .to(),
-        to: request.to.into(),
-        value: request.value.unwrap_or_default(),
-        input: request.input.into_input().unwrap_or_default(),
-        access_list: convert_access_list(request.access_list.unwrap_or_default()),
-    })
-}
+    #[test]
+    fn test_4844_when_sidecar() {
+        let request = TransactionRequest::default()
+            .with_nonce(1)
+            .with_gas_limit(0)
+            .with_max_fee_per_gas(0)
+            .with_max_priority_fee_per_gas(0)
+            .with_to(Address::ZERO)
+            .with_blob_sidecar(BlobTransactionSidecar::default())
+            .with_max_fee_per_blob_gas(0);
 
-/// Build an EIP-4844 transaction.
-fn build_4844(request: TransactionRequest) -> Result<TxEip4844, TransactionBuilderError> {
-    Ok(TxEip4844 {
-        chain_id: request.chain_id.unwrap_or(1),
-        nonce: request.nonce.ok_or_else(|| TransactionBuilderError::MissingKey("nonce"))?,
-        gas_limit: request
-            .gas
-            .ok_or_else(|| TransactionBuilderError::MissingKey("gas_limit"))?
-            .to(),
-        max_fee_per_gas: request
-            .max_fee_per_gas
-            .ok_or_else(|| TransactionBuilderError::MissingKey("max_fee_per_gas"))?
-            .to(),
-        max_priority_fee_per_gas: request
-            .max_priority_fee_per_gas
-            .ok_or_else(|| TransactionBuilderError::MissingKey("max_priority_fee_per_gas"))?
-            .to(),
-        to: request.to.into(),
-        value: request.value.unwrap_or_default(),
-        access_list: convert_access_list(request.access_list.unwrap_or_default()),
-        blob_versioned_hashes: request
-            .blob_versioned_hashes
-            .ok_or_else(|| TransactionBuilderError::MissingKey("blob_versioned_hashes"))?,
-        max_fee_per_blob_gas: request
-            .max_fee_per_blob_gas
-            .ok_or_else(|| TransactionBuilderError::MissingKey("max_fee_per_blob_gas"))?
-            .to(),
-        input: request.input.into_input().unwrap_or_default(),
-    })
-}
+        let tx = request.clone().build_unsigned().unwrap();
 
-// todo: these types are almost 1:1, minus rlp decoding and ser/de, should dedupe
-fn convert_access_list(list: alloy_rpc_types::AccessList) -> alloy_eips::eip2930::AccessList {
-    alloy_eips::eip2930::AccessList(
-        list.0
-            .into_iter()
-            .map(|item| alloy_eips::eip2930::AccessListItem {
-                address: item.address,
-                storage_keys: item.storage_keys,
-            })
-            .collect(),
-    )
+        assert!(matches!(tx, TypedTransaction::Eip4844(_)));
+
+        let tx = request.with_gas_price(0).build_unsigned().unwrap();
+
+        assert!(matches!(tx, TypedTransaction::Eip4844(_)));
+    }
+
+    #[test]
+    fn test_2930_when_access_list() {
+        let request = TransactionRequest::default()
+            .with_nonce(1)
+            .with_gas_limit(0)
+            .with_max_fee_per_gas(0)
+            .with_max_priority_fee_per_gas(0)
+            .with_to(Address::ZERO)
+            .with_gas_price(0)
+            .with_access_list(AccessList::default());
+
+        let tx = request.build_unsigned().unwrap();
+
+        assert!(matches!(tx, TypedTransaction::Eip2930(_)));
+    }
+
+    #[test]
+    fn test_default_to_1559() {
+        let request = TransactionRequest::default()
+            .with_nonce(1)
+            .with_gas_limit(0)
+            .with_max_fee_per_gas(0)
+            .with_max_priority_fee_per_gas(0)
+            .with_to(Address::ZERO);
+
+        let tx = request.clone().build_unsigned().unwrap();
+
+        assert!(matches!(tx, TypedTransaction::Eip1559(_)));
+
+        let request = request.with_gas_price(0);
+        let tx = request.build_unsigned().unwrap();
+        assert!(matches!(tx, TypedTransaction::Legacy(_)));
+    }
+
+    #[test]
+    fn test_fail_when_sidecar_and_access_list() {
+        let request = TransactionRequest::default()
+            .with_blob_sidecar(BlobTransactionSidecar::default())
+            .with_access_list(AccessList::default());
+
+        let error = request.build_unsigned().unwrap_err();
+
+        assert!(matches!(error.error, TransactionBuilderError::InvalidTransactionRequest(_, _)));
+    }
+
+    #[test]
+    fn test_invalid_legacy_fields() {
+        let request = TransactionRequest::default().with_gas_price(0);
+
+        let error = request.build_unsigned().unwrap_err();
+
+        let TransactionBuilderError::InvalidTransactionRequest(tx_type, errors) = error.error
+        else {
+            panic!("wrong variant")
+        };
+
+        assert_eq!(tx_type, TxType::Legacy);
+        assert_eq!(errors.len(), 3);
+        assert!(errors.contains(&"to"));
+        assert!(errors.contains(&"nonce"));
+        assert!(errors.contains(&"gas_limit"));
+    }
+
+    #[test]
+    fn test_invalid_1559_fields() {
+        let request = TransactionRequest::default();
+
+        let error = request.build_unsigned().unwrap_err();
+
+        let TransactionBuilderError::InvalidTransactionRequest(tx_type, errors) = error.error
+        else {
+            panic!("wrong variant")
+        };
+
+        assert_eq!(tx_type, TxType::Eip1559);
+        assert_eq!(errors.len(), 5);
+        assert!(errors.contains(&"to"));
+        assert!(errors.contains(&"nonce"));
+        assert!(errors.contains(&"gas_limit"));
+        assert!(errors.contains(&"max_priority_fee_per_gas"));
+        assert!(errors.contains(&"max_fee_per_gas"));
+    }
+
+    #[test]
+    fn test_invalid_2930_fields() {
+        let request = TransactionRequest::default()
+            .with_access_list(AccessList::default())
+            .with_gas_price(Default::default());
+
+        let error = request.build_unsigned().unwrap_err();
+
+        let TransactionBuilderError::InvalidTransactionRequest(tx_type, errors) = error.error
+        else {
+            panic!("wrong variant")
+        };
+
+        assert_eq!(tx_type, TxType::Eip2930);
+        assert_eq!(errors.len(), 3);
+        assert!(errors.contains(&"to"));
+        assert!(errors.contains(&"nonce"));
+        assert!(errors.contains(&"gas_limit"));
+    }
+
+    #[test]
+    fn test_invalid_4844_fields() {
+        let request =
+            TransactionRequest::default().with_blob_sidecar(BlobTransactionSidecar::default());
+
+        let error = request.build_unsigned().unwrap_err();
+
+        let TransactionBuilderError::InvalidTransactionRequest(tx_type, errors) = error.error
+        else {
+            panic!("wrong variant")
+        };
+
+        assert_eq!(tx_type, TxType::Eip4844);
+        assert_eq!(errors.len(), 7);
+        assert!(errors.contains(&"to"));
+        assert!(errors.contains(&"nonce"));
+        assert!(errors.contains(&"gas_limit"));
+        assert!(errors.contains(&"max_priority_fee_per_gas"));
+        assert!(errors.contains(&"max_fee_per_gas"));
+        assert!(errors.contains(&"to"));
+        assert!(errors.contains(&"max_fee_per_blob_gas"));
+    }
 }

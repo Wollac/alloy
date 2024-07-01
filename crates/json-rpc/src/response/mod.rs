@@ -19,7 +19,7 @@ pub use payload::{BorrowedResponsePayload, ResponsePayload};
 /// either a successful result or an error. The `id` field is used to match
 /// the response to the request that it is responding to, and should be
 /// mirrored from the response.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Response<Payload = Box<RawValue>, ErrData = Box<RawValue>> {
     /// The ID of the request that this response is responding to.
     pub id: Id,
@@ -78,7 +78,7 @@ where
     pub fn deser_success<T: DeserializeOwned>(self) -> Result<Response<T, ErrData>, Self> {
         match self.payload.deserialize_success() {
             Ok(payload) => Ok(Response { id: self.id, payload }),
-            Err(payload) => Err(Response { id: self.id, payload }),
+            Err(payload) => Err(Self { id: self.id, payload }),
         }
     }
 }
@@ -105,7 +105,7 @@ where
     pub fn deser_err<T: DeserializeOwned>(self) -> Result<Response<Payload, T>, Self> {
         match self.payload.deserialize_error() {
             Ok(payload) => Ok(Response { id: self.id, payload }),
-            Err(payload) => Err(Response { id: self.id, payload }),
+            Err(payload) => Err(Self { id: self.id, payload }),
         }
     }
 }
@@ -127,7 +127,7 @@ where
         }
 
         impl<'de> Deserialize<'de> for Field {
-            fn deserialize<D>(deserializer: D) -> Result<Field, D::Error>
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
                 D: Deserializer<'de>,
             {

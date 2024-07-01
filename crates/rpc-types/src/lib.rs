@@ -1,25 +1,35 @@
-//! Alloy RPC type definitions.
-//!
-//! Provides all relevant types for the various RPC endpoints, grouped by namespace.
-
 #![doc = include_str!("../README.md")]
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/alloy.jpg",
     html_favicon_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/favicon.ico"
 )]
-#![warn(
-    missing_copy_implementations,
-    missing_debug_implementations,
-    missing_docs,
-    unreachable_pub,
-    clippy::missing_const_for_fn,
-    rustdoc::all
-)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![deny(unused_must_use, rust_2018_idioms)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-mod eth;
-
 pub use alloy_serde as serde_helpers;
+
+#[cfg(feature = "admin")]
+pub use alloy_rpc_types_admin as admin;
+
+#[cfg(feature = "anvil")]
+pub use alloy_rpc_types_anvil as anvil;
+
+#[cfg(feature = "beacon")]
+pub use alloy_rpc_types_beacon as beacon;
+
+#[cfg(feature = "engine")]
+pub use alloy_rpc_types_engine as engine;
+
+#[cfg(feature = "eth")]
+pub use alloy_rpc_types_eth as eth;
+#[cfg(feature = "eth")]
 pub use eth::*;
+
+#[cfg(feature = "mev")]
+pub use alloy_rpc_types_mev as mev;
+
+#[cfg(feature = "trace")]
+pub use alloy_rpc_types_trace as trace;
+
+#[cfg(feature = "txpool")]
+pub use alloy_rpc_types_txpool as txpool;

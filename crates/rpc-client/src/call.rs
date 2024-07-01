@@ -62,59 +62,6 @@ where
     }
 }
 
-impl<Params, Conn> CallState<Params, Conn>
-where
-    Conn: Transport + Clone,
-    Params: RpcParam,
-{
-    fn poll_prepared(
-        mut self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-    ) -> task::Poll<<Self as Future>::Output> {
-        trace!("Polling prepared");
-        let fut = {
-            let CallStateProj::Prepared { connection, request } = self.as_mut().project() else {
-                unreachable!("Called poll_prepared in incorrect state")
-            };
-
-            if let Err(e) = task::ready!(Service::<RequestPacket>::poll_ready(connection, cx)) {
-                self.set(CallState::Complete);
-                return Ready(RpcResult::Err(e));
-            }
-            let request = request.take().expect("No request. This is a bug.").serialize();
-
-            match request {
-                Ok(request) => connection.call(request.into()),
-                Err(err) => {
-                    self.set(CallState::Complete);
-                    return Ready(RpcResult::Err(TransportError::ser_err(err)));
-                }
-            }
-        };
-
-        self.set(CallState::AwaitingResponse { fut });
-        cx.waker().wake_by_ref();
-
-        task::Poll::Pending
-    }
-
-    fn poll_awaiting(
-        mut self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-    ) -> task::Poll<<Self as Future>::Output> {
-        trace!("Polling awaiting");
-        let CallStateProj::AwaitingResponse { fut } = self.as_mut().project() else {
-            unreachable!("Called poll_awaiting in incorrect state")
-        };
-
-        match task::ready!(fut.poll(cx)) {
-            Ok(ResponsePacket::Single(res)) => Ready(transform_response(res)),
-            Err(e) => Ready(RpcResult::Err(e)),
-            _ => panic!("received batch response from single request"),
-        }
-    }
-}
-
 impl<Params, Conn> Future for CallState<Params, Conn>
 where
     Conn: Transport + Clone,
@@ -122,17 +69,48 @@ where
 {
     type Output = TransportResult<Box<RawValue>>;
 
-    #[instrument(skip(self, cx))]
     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
-        if matches!(*self.as_mut(), CallState::Prepared { .. }) {
-            return self.poll_prepared(cx);
-        }
+        loop {
+            match self.as_mut().project() {
+                CallStateProj::Prepared { connection, request } => {
+                    if let Err(e) =
+                        task::ready!(Service::<RequestPacket>::poll_ready(connection, cx))
+                    {
+                        self.set(Self::Complete);
+                        return Ready(RpcResult::Err(e));
+                    }
 
-        if matches!(*self.as_mut(), CallState::AwaitingResponse { .. }) {
-            return self.poll_awaiting(cx);
+                    let request = request.take().expect("no request");
+                    debug!(method=%request.meta.method, id=%request.meta.id, "sending request");
+                    trace!(params_ty=%std::any::type_name::<Params>(), ?request, "full request");
+                    let request = request.serialize();
+                    let fut = match request {
+                        Ok(request) => {
+                            trace!(request=%request.serialized(), "serialized request");
+                            connection.call(request.into())
+                        }
+                        Err(err) => {
+                            trace!(?err, "failed to serialize request");
+                            self.set(Self::Complete);
+                            return Ready(RpcResult::Err(TransportError::ser_err(err)));
+                        }
+                    };
+                    self.set(Self::AwaitingResponse { fut });
+                }
+                CallStateProj::AwaitingResponse { fut } => {
+                    let res = match task::ready!(fut.poll(cx)) {
+                        Ok(ResponsePacket::Single(res)) => Ready(transform_response(res)),
+                        Err(e) => Ready(RpcResult::Err(e)),
+                        _ => panic!("received batch response from single request"),
+                    };
+                    self.set(Self::Complete);
+                    return res;
+                }
+                CallStateProj::Complete => {
+                    panic!("Polled after completion");
+                }
+            }
         }
-
-        panic!("Polled in bad state");
     }
 }
 
@@ -147,7 +125,7 @@ where
 /// either a successful response of the `Resp` type, an error response, or a
 /// transport error.
 ///
-/// ### Note:
+/// ### Note
 ///
 /// Serializing the request is done lazily. The request is not serialized until
 /// the future is polled. This differs from the behavior of
@@ -156,25 +134,27 @@ where
 /// requests with different `Param` types, while the `RpcCall` may do so lazily.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 #[pin_project::pin_project]
-#[derive(Debug)]
-pub struct RpcCall<Conn, Params, Resp>
+#[derive(Clone)]
+pub struct RpcCall<Conn, Params, Resp, Output = Resp, Map = fn(Resp) -> Output>
 where
     Conn: Transport + Clone,
     Params: RpcParam,
+    Map: Fn(Resp) -> Output,
 {
     #[pin]
     state: CallState<Params, Conn>,
-    _pd: PhantomData<fn() -> Resp>,
+    map: Map,
+    _pd: core::marker::PhantomData<fn() -> (Resp, Output)>,
 }
 
-impl<Conn, Params, Resp> Clone for RpcCall<Conn, Params, Resp>
+impl<Conn, Params, Resp, Output, Map> core::fmt::Debug for RpcCall<Conn, Params, Resp, Output, Map>
 where
     Conn: Transport + Clone,
     Params: RpcParam,
-    Resp: RpcReturn,
+    Map: Fn(Resp) -> Output,
 {
-    fn clone(&self) -> Self {
-        Self { state: self.state.clone(), _pd: PhantomData }
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RpcCall").field("state", &self.state).finish()
     }
 }
 
@@ -185,7 +165,38 @@ where
 {
     #[doc(hidden)]
     pub fn new(req: Request<Params>, connection: Conn) -> Self {
-        Self { state: CallState::Prepared { request: Some(req), connection }, _pd: PhantomData }
+        Self {
+            state: CallState::Prepared { request: Some(req), connection },
+            map: std::convert::identity,
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl<Conn, Params, Resp, Output, Map> RpcCall<Conn, Params, Resp, Output, Map>
+where
+    Conn: Transport + Clone,
+    Params: RpcParam,
+    Map: Fn(Resp) -> Output,
+{
+    /// Set a function to map the response into a different type.
+    pub fn map_resp<NewOutput, NewMap>(
+        self,
+        map: NewMap,
+    ) -> RpcCall<Conn, Params, Resp, NewOutput, NewMap>
+    where
+        NewMap: Fn(Resp) -> NewOutput,
+    {
+        RpcCall { state: self.state, map, _pd: PhantomData }
+    }
+
+    /// Returns `true` if the request is a subscription.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called after the request has been sent.
+    pub fn is_subscription(&self) -> bool {
+        self.request().meta.is_subscription()
     }
 
     /// Set the request to be a non-standard subscription (i.e. not
@@ -195,28 +206,12 @@ where
     ///
     /// Panics if called after the request has been sent.
     pub fn set_is_subscription(&mut self) {
-        if let CallState::Prepared { request, .. } = &mut self.state {
-            request
-                .as_mut()
-                .expect("No request in prepared. This is a bug")
-                .meta
-                .set_is_subscription();
-        } else {
-            panic!("Cannot set non-standard sub after request has been sent");
-        }
+        self.request_mut().meta.set_is_subscription();
     }
 
-    /// Returns `true` if the request is a subscription.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called after the request has been sent.
-    pub fn is_subscription(&self) -> bool {
-        if let CallState::Prepared { request, .. } = &self.state {
-            request.as_ref().expect("No request in prepared. This is a bug").meta.is_subscription()
-        } else {
-            panic!("Cannot get is_subscription after request has been sent");
-        }
+    /// Set the subscription status of the request.
+    pub fn set_subscription_status(&mut self, status: bool) {
+        self.request_mut().meta.set_subscription_status(status);
     }
 
     /// Get a mutable reference to the params of the request.
@@ -228,57 +223,86 @@ where
     ///
     /// Panics if called after the request has been sent.
     pub fn params(&mut self) -> &mut Params {
-        if let CallState::Prepared { request, .. } = &mut self.state {
-            &mut request.as_mut().expect("No params in prepared. This is a bug").params
-        } else {
-            panic!("Cannot get params after request has been sent");
-        }
+        &mut self.request_mut().params
+    }
+
+    /// Returns a reference to the request.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called after the request has been sent.
+    pub fn request(&self) -> &Request<Params> {
+        let CallState::Prepared { request, .. } = &self.state else {
+            panic!("Cannot get request after request has been sent");
+        };
+        request.as_ref().expect("no request in prepared")
+    }
+
+    /// Returns a mutable reference to the request.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called after the request has been sent.
+    pub fn request_mut(&mut self) -> &mut Request<Params> {
+        let CallState::Prepared { request, .. } = &mut self.state else {
+            panic!("Cannot get request after request has been sent");
+        };
+        request.as_mut().expect("no request in prepared")
     }
 }
 
-impl<Conn, Params, Resp> RpcCall<Conn, &Params, Resp>
+impl<Conn, Params, Resp, Output, Map> RpcCall<Conn, &Params, Resp, Output, Map>
 where
     Conn: Transport + Clone,
     Params: RpcParam + Clone,
+    Map: Fn(Resp) -> Output,
 {
     /// Convert this call into one with owned params, by cloning the params.
-    pub fn into_owned_params(self) -> RpcCall<Conn, Params, Resp> {
-        if let CallState::Prepared { request, connection } = self.state {
-            let request =
-                request.expect("No params in prepared. This is a bug").into_owned_params();
-            RpcCall::new(request, connection)
-        } else {
+    ///
+    /// # Panics
+    ///
+    /// Panics if called after the request has been sent.
+    pub fn into_owned_params(self) -> RpcCall<Conn, Params, Resp, Output, Map> {
+        let CallState::Prepared { request, connection } = self.state else {
             panic!("Cannot get params after request has been sent");
+        };
+        let request = request.expect("no request in prepared").into_owned_params();
+
+        RpcCall {
+            state: CallState::Prepared { request: Some(request), connection },
+            map: self.map,
+            _pd: PhantomData,
         }
     }
 }
 
-impl<'a, Conn, Params, Resp> RpcCall<Conn, Params, Resp>
+impl<'a, Conn, Params, Resp, Output, Map> RpcCall<Conn, Params, Resp, Output, Map>
 where
     Conn: Transport + Clone,
     Params: RpcParam + 'a,
     Resp: RpcReturn,
+    Output: 'static,
+    Map: Fn(Resp) -> Output + Send + 'a,
 {
     /// Convert this future into a boxed, pinned future, erasing its type.
-    pub fn boxed(self) -> RpcFut<'a, Resp> {
+    pub fn boxed(self) -> RpcFut<'a, Output> {
         Box::pin(self)
     }
 }
 
-impl<Conn, Params, Resp> Future for RpcCall<Conn, Params, Resp>
+impl<Conn, Params, Resp, Output, Map> Future for RpcCall<Conn, Params, Resp, Output, Map>
 where
     Conn: Transport + Clone,
     Params: RpcParam,
     Resp: RpcReturn,
+    Output: 'static,
+    Map: Fn(Resp) -> Output,
 {
-    type Output = TransportResult<Resp>;
+    type Output = TransportResult<Output>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
-        trace!(?self.state, "Polling RpcCall");
+        trace!(?self.state, "polling RpcCall");
         let this = self.project();
-
-        let result = task::ready!(this.state.poll(cx));
-
-        Ready(try_deserialize_ok(result))
+        this.state.poll(cx).map(try_deserialize_ok).map(|r| r.map(this.map))
     }
 }

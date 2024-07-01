@@ -11,6 +11,13 @@ homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
+
 [dependencies]
 alloy-primitives.workspace = true
 alloy-serde.workspace = true
@@ -23,9 +30,4 @@ serde_json.workspace = true
 
 [features]
 default = ["std"]
-std = [
-    "alloy-primitives/std",
-    "alloy-serde/std",
-    # serde
-    "serde/std",
-]
+std = ["alloy-primitives/std", "alloy-serde/std", "serde/std"]

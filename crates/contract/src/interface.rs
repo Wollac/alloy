@@ -5,7 +5,7 @@ use alloy_primitives::{Address, Selector};
 use std::collections::{BTreeMap, HashMap};
 
 /// A smart contract interface.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Interface {
     abi: JsonAbi,
     functions: HashMap<Selector, (String, usize)>,
@@ -116,11 +116,11 @@ impl Interface {
     }
 
     /// Create a [`ContractInstance`] from this ABI for a contract at the given address.
-    pub const fn connect<N, T, P>(
+    pub const fn connect<T, P, N>(
         self,
         address: Address,
         provider: P,
-    ) -> ContractInstance<N, T, P> {
+    ) -> ContractInstance<T, P, N> {
         ContractInstance::new(address, provider, self)
     }
 }

@@ -5,46 +5,48 @@
     html_logo_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/alloy.jpg",
     html_favicon_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/favicon.ico"
 )]
-#![warn(
-    missing_copy_implementations,
-    missing_debug_implementations,
-    missing_docs,
-    unreachable_pub,
-    clippy::missing_const_for_fn,
-    rustdoc::all
-)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![deny(unused_must_use, rust_2018_idioms)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
 use alloc::format;
-
-use alloy_primitives::B256;
+use alloy_primitives::{hex, B256};
 use serde::Serializer;
 
-pub mod json_u256;
-pub use self::json_u256::JsonU256;
+mod bool;
+pub use self::bool::*;
 
-/// Helpers for dealing with numbers.
+mod optional;
+pub use self::optional::*;
+
+#[cfg_attr(not(test), deprecated = "use `quantity::{self, opt, vec}` instead")]
 pub mod num;
-pub use self::num::*;
+#[allow(deprecated)]
+pub use num::*;
+
+pub mod quantity;
 
 /// Storage related helpers.
 pub mod storage;
-pub use self::storage::JsonStorageKey;
+pub use storage::JsonStorageKey;
+
+pub mod ttd;
+pub use ttd::*;
+
+mod other;
+pub use other::{OtherFields, WithOtherFields};
 
 /// Serialize a byte vec as a hex string _without_ the "0x" prefix.
 ///
-/// This behaves the same as [`hex::encode`](alloy_primitives::hex::encode).
+/// This behaves the same as [`hex::encode`].
 pub fn serialize_hex_string_no_prefix<S, T>(x: T, s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
     T: AsRef<[u8]>,
 {
-    s.serialize_str(&alloy_primitives::hex::encode(x.as_ref()))
+    s.serialize_str(&hex::encode(x.as_ref()))
 }
 
 /// Serialize a [B256] as a hex string _without_ the "0x" prefix.

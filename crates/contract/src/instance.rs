@@ -1,10 +1,10 @@
 use crate::{CallBuilder, Event, Interface, Result};
 use alloy_dyn_abi::DynSolValue;
 use alloy_json_abi::{Function, JsonAbi};
-use alloy_network::Network;
+use alloy_network::{Ethereum, Network};
 use alloy_primitives::{Address, Selector};
 use alloy_provider::Provider;
-use alloy_rpc_types::Filter;
+use alloy_rpc_types_eth::Filter;
 use alloy_sol_types::SolEvent;
 use alloy_transport::Transport;
 use std::marker::PhantomData;
@@ -14,7 +14,7 @@ use std::marker::PhantomData;
 /// A contract is an abstraction of an executable program on Ethereum. Every deployed contract has
 /// an address, which is used to connect to it so that it may receive messages (transactions).
 #[derive(Clone)]
-pub struct ContractInstance<N, T, P> {
+pub struct ContractInstance<T, P, N = Ethereum> {
     address: Address,
     provider: P,
     interface: Interface,
@@ -22,7 +22,7 @@ pub struct ContractInstance<N, T, P> {
     network: PhantomData<N>,
 }
 
-impl<N, T, P> ContractInstance<N, T, P> {
+impl<T, P, N> ContractInstance<T, P, N> {
     /// Creates a new contract from the provided address, provider, and interface.
     #[inline]
     pub const fn new(address: Address, provider: P, interface: Interface) -> Self {
@@ -43,7 +43,7 @@ impl<N, T, P> ContractInstance<N, T, P> {
 
     /// Returns a new contract instance at `address`.
     #[inline]
-    pub fn at(mut self, address: Address) -> ContractInstance<N, T, P> {
+    pub fn at(mut self, address: Address) -> Self {
         self.set_address(address);
         self
     }
@@ -61,10 +61,10 @@ impl<N, T, P> ContractInstance<N, T, P> {
     }
 }
 
-impl<N, T, P: Clone> ContractInstance<N, T, &P> {
+impl<T, P: Clone, N> ContractInstance<T, &P, N> {
     /// Clones the provider and returns a new contract instance with the cloned provider.
     #[inline]
-    pub fn with_cloned_provider(self) -> ContractInstance<N, T, P> {
+    pub fn with_cloned_provider(self) -> ContractInstance<T, P, N> {
         ContractInstance {
             address: self.address,
             provider: self.provider.clone(),
@@ -75,7 +75,7 @@ impl<N, T, P: Clone> ContractInstance<N, T, &P> {
     }
 }
 
-impl<N: Network, T: Transport + Clone, P: Provider<N, T>> ContractInstance<N, T, P> {
+impl<T: Transport + Clone, P: Provider<T, N>, N: Network> ContractInstance<T, P, N> {
     /// Returns a transaction builder for the provided function name.
     ///
     /// If there are multiple functions with the same name due to overloading, consider using
@@ -85,9 +85,9 @@ impl<N: Network, T: Transport + Clone, P: Provider<N, T>> ContractInstance<N, T,
         &self,
         name: &str,
         args: &[DynSolValue],
-    ) -> Result<CallBuilder<N, T, &P, Function>> {
+    ) -> Result<CallBuilder<T, &P, Function, N>> {
         let function = self.interface.get_from_name(name)?;
-        CallBuilder::new_dyn(&self.provider, function, args)
+        CallBuilder::new_dyn(&self.provider, &self.address, function, args)
     }
 
     /// Returns a transaction builder for the provided function selector.
@@ -95,18 +95,18 @@ impl<N: Network, T: Transport + Clone, P: Provider<N, T>> ContractInstance<N, T,
         &self,
         selector: &Selector,
         args: &[DynSolValue],
-    ) -> Result<CallBuilder<N, T, &P, Function>> {
+    ) -> Result<CallBuilder<T, &P, Function, N>> {
         let function = self.interface.get_from_selector(selector)?;
-        CallBuilder::new_dyn(&self.provider, function, args)
+        CallBuilder::new_dyn(&self.provider, &self.address, function, args)
     }
 
     /// Returns an [`Event`] builder with the provided filter.
-    pub fn event<E: SolEvent>(&self, filter: Filter) -> Event<N, T, &P, E> {
+    pub const fn event<E: SolEvent>(&self, filter: Filter) -> Event<T, &P, E, N> {
         Event::new(&self.provider, filter)
     }
 }
 
-impl<N, T, P> std::ops::Deref for ContractInstance<N, T, P> {
+impl<T, P, N> std::ops::Deref for ContractInstance<T, P, N> {
     type Target = Interface;
 
     fn deref(&self) -> &Self::Target {
@@ -114,8 +114,47 @@ impl<N, T, P> std::ops::Deref for ContractInstance<N, T, P> {
     }
 }
 
-impl<N, T, P> std::fmt::Debug for ContractInstance<N, T, P> {
+impl<T, P, N> std::fmt::Debug for ContractInstance<T, P, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ContractInstance").field("address", &self.address).finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_network::TransactionBuilder;
+    use alloy_primitives::{hex, U256};
+    use alloy_provider::ProviderBuilder;
+    use alloy_rpc_types_eth::TransactionRequest;
+
+    #[tokio::test]
+    async fn contract_interface() {
+        let provider = ProviderBuilder::new().on_anvil();
+
+        let abi_str = r#"[{"inputs":[],"name":"counter","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"increment","outputs":[],"stateMutability":"nonpayable","type":"function"}]"#;
+        let abi = serde_json::from_str::<JsonAbi>(abi_str).unwrap();
+        let bytecode = hex::decode("6080806040523460135760b2908160188239f35b5f80fdfe60808060405260043610156011575f80fd5b5f3560e01c90816361bc221a146065575063d09de08a14602f575f80fd5b346061575f3660031901126061575f5460018101809111604d575f55005b634e487b7160e01b5f52601160045260245ffd5b5f80fd5b346061575f3660031901126061576020905f548152f3fea2646970667358221220d802267a5f574e54a87a63d0ff8d733fdb275e6e6c502831d9e14f957bbcd7a264736f6c634300081a0033").unwrap();
+        let deploy_tx = TransactionRequest::default().with_deploy_code(bytecode);
+        let address = provider
+            .send_transaction(deploy_tx)
+            .await
+            .unwrap()
+            .get_receipt()
+            .await
+            .unwrap()
+            .contract_address
+            .unwrap();
+
+        let contract = ContractInstance::new(address, provider, Interface::new(abi));
+        assert_eq!(contract.abi().functions().count(), 2);
+
+        let result = contract.function("counter", &[]).unwrap().call().await.unwrap();
+        assert_eq!(result[0].as_uint().unwrap().0, U256::from(0));
+
+        contract.function("increment", &[]).unwrap().send().await.unwrap().watch().await.unwrap();
+
+        let result = contract.function("counter", &[]).unwrap().call().await.unwrap();
+        assert_eq!(result[0].as_uint().unwrap().0, U256::from(1));
     }
 }

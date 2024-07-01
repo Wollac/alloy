@@ -1,5 +1,5 @@
 //! Ethereum protocol-related constants
-use alloy_primitives::{address, b256, Address, B256};
+use alloy_primitives::{b256, B256};
 
 /// The first four bytes of the call data for a function call specifies the function to be called.
 pub const SELECTOR_LEN: usize = 4;
@@ -68,5 +68,15 @@ pub const EMPTY_TRANSACTIONS: B256 = EMPTY_ROOT_HASH;
 /// Withdrawals root of empty withdrawals set.
 pub const EMPTY_WITHDRAWALS: B256 = EMPTY_ROOT_HASH;
 
-/// The address for the beacon roots contract defined in EIP-4788.
-pub const BEACON_ROOTS_ADDRESS: Address = address!("000F3df6D732807Ef1319fB7B8bB8522d0Beac02");
+/// Identifier for legacy transaction, however a legacy tx is technically not
+/// typed.
+pub const LEGACY_TX_TYPE_ID: u8 = 0;
+
+/// Identifier for an EIP2930 transaction.
+pub const EIP2930_TX_TYPE_ID: u8 = 1;
+
+/// Identifier for an EIP1559 transaction.
+pub const EIP1559_TX_TYPE_ID: u8 = 2;
+
+/// Identifier for an EIP4844 transaction.
+pub const EIP4844_TX_TYPE_ID: u8 = 3;

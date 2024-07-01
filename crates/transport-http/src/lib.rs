@@ -3,26 +3,62 @@
     html_logo_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/alloy.jpg",
     html_favicon_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/favicon.ico"
 )]
-#![warn(
-    missing_copy_implementations,
-    missing_debug_implementations,
-    missing_docs,
-    unreachable_pub,
-    clippy::missing_const_for_fn,
-    rustdoc::all
-)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![deny(unused_must_use, rust_2018_idioms)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use alloy_transport::utils::guess_local_url;
-use url::Url;
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "hyper"))]
-mod hyper;
+#[cfg(feature = "reqwest")]
+mod reqwest_transport;
 
 #[cfg(feature = "reqwest")]
-mod reqwest;
+#[doc(inline)]
+pub use reqwest_transport::*;
+
+#[cfg(feature = "reqwest")]
+pub use reqwest;
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "hyper"))]
+mod hyper_transport;
+#[cfg(all(not(target_arch = "wasm32"), feature = "hyper"))]
+#[doc(inline)]
+pub use hyper_transport::*;
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "hyper"))]
+pub use hyper;
+#[cfg(all(not(target_arch = "wasm32"), feature = "hyper"))]
+pub use hyper_util;
+
+use alloy_transport::utils::guess_local_url;
+use core::{marker::PhantomData, str::FromStr};
+use url::Url;
+
+/// Connection details for an HTTP transport.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[doc(hidden)]
+pub struct HttpConnect<T> {
+    /// The URL to connect to.
+    url: Url,
+    _pd: PhantomData<T>,
+}
+
+impl<T> HttpConnect<T> {
+    /// Create a new [`HttpConnect`] with the given URL.
+    pub const fn new(url: Url) -> Self {
+        Self { url, _pd: PhantomData }
+    }
+
+    /// Get a reference to the URL.
+    pub const fn url(&self) -> &Url {
+        &self.url
+    }
+}
+
+impl<T> FromStr for HttpConnect<T> {
+    type Err = url::ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::new(s.parse()?))
+    }
+}
 
 /// An Http transport.
 ///
@@ -33,23 +69,15 @@ mod reqwest;
 /// [`Transport`]: alloy_transport::Transport
 ///
 /// Currently supported clients are:
-#[cfg_attr(feature = "reqwest", doc = " - [`::reqwest::Client`]")]
-#[cfg_attr(feature = "hyper", doc = " - [`::hyper::client::Client`]")]
-#[derive(Debug, Clone)]
+#[cfg_attr(feature = "reqwest", doc = " - [`reqwest`](::reqwest::Client)")]
+#[cfg_attr(feature = "hyper", doc = " - [`hyper`](hyper_util::client::legacy::Client)")]
+#[derive(Clone, Debug)]
 pub struct Http<T> {
     client: T,
     url: Url,
 }
 
 impl<T> Http<T> {
-    /// Create a new [`Http`] transport.
-    pub fn new(url: Url) -> Self
-    where
-        T: Default,
-    {
-        Self { client: Default::default(), url }
-    }
-
     /// Create a new [`Http`] transport with a custom client.
     pub const fn with_client(client: T, url: Url) -> Self {
         Self { client, url }

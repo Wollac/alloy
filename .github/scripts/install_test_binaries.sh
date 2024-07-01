@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Installs Solc and Geth binaries
+# Installs Geth binary
 # Note: intended for use only with CI (x86_64 Ubuntu, MacOS or Windows)
 set -e
 
-GETH_BUILD=${GETH_BUILD:-"1.11.2-73b01f40"}
+GETH_BUILD=${GETH_BUILD:-"1.14.0-87246f3c"}
 
 BIN_DIR=${BIN_DIR:-"$HOME/bin"}
 
 PLATFORM="$(uname -s | awk '{print tolower($0)}')"
-if [ "$PLATFORM" != "linux" ] && [ "$PLATFORM" != "darwin" ]; then
-    EXT=".exe"
-fi
 
 main() {
     mkdir -p "$BIN_DIR"

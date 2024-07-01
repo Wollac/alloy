@@ -1,8 +1,11 @@
-use crate::{
-    Signed, TxEip1559, TxEip2930, TxEip4844, TxEip4844Variant, TxEip4844WithSidecar, TxLegacy,
-};
-use alloy_eips::eip2718::{Decodable2718, Eip2718Error, Encodable2718};
+use core::fmt;
+
+use crate::{Signed, TxEip1559, TxEip2930, TxLegacy};
+use alloy_eips::eip2718::{Decodable2718, Eip2718Error, Eip2718Result, Encodable2718};
+use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable, Header};
+
+use crate::transaction::eip4844::{TxEip4844, TxEip4844Variant, TxEip4844WithSidecar};
 
 /// Ethereum `TransactionType` flags as specified in EIPs [2718], [1559], and
 /// [2930].
@@ -12,7 +15,8 @@ use alloy_rlp::{Decodable, Encodable, Header};
 /// [2930]: https://eips.ethereum.org/EIPS/eip-2930
 /// [4844]: https://eips.ethereum.org/EIPS/eip-4844
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[doc(alias = "TransactionType")]
 pub enum TxType {
     /// Legacy transaction type.
     Legacy = 0,
@@ -24,16 +28,27 @@ pub enum TxType {
     Eip4844 = 3,
 }
 
+impl From<TxType> for u8 {
+    fn from(value: TxType) -> Self {
+        value as Self
+    }
+}
+
+impl fmt::Display for TxType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Legacy => write!(f, "Legacy"),
+            Self::Eip2930 => write!(f, "EIP-2930"),
+            Self::Eip1559 => write!(f, "EIP-1559"),
+            Self::Eip4844 => write!(f, "EIP-4844"),
+        }
+    }
+}
+
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for TxType {
     fn arbitrary(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<Self> {
-        Ok(match u.int_in_range(0..=3)? {
-            0 => TxType::Legacy,
-            1 => TxType::Eip2930,
-            2 => TxType::Eip1559,
-            3 => TxType::Eip4844,
-            _ => unreachable!(),
-        })
+        Ok(u.int_in_range(0u8..=3)?.try_into().unwrap())
     }
 }
 
@@ -41,12 +56,13 @@ impl TryFrom<u8> for TxType {
     type Error = Eip2718Error;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Err(Eip2718Error::UnexpectedType(value)),
-            // SAFETY: repr(u8) with explicit discriminant
-            1..=3 => Ok(unsafe { std::mem::transmute(value) }),
-            _ => Err(Eip2718Error::UnexpectedType(value)),
-        }
+        Ok(match value {
+            0 => Self::Legacy,
+            1 => Self::Eip2930,
+            2 => Self::Eip1559,
+            3 => Self::Eip4844,
+            _ => return Err(Eip2718Error::UnexpectedType(value)),
+        })
     }
 }
 
@@ -61,13 +77,20 @@ impl TryFrom<u8> for TxType {
 /// flag.
 ///
 /// [EIP-2718]: https://eips.ethereum.org/EIPS/eip-2718
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "type"))]
+#[doc(alias = "TransactionEnvelope")]
+#[non_exhaustive]
 pub enum TxEnvelope {
     /// An untagged [`TxLegacy`].
+    #[cfg_attr(feature = "serde", serde(rename = "0x0", alias = "0x00"))]
     Legacy(Signed<TxLegacy>),
     /// A [`TxEip2930`] tagged with type 1.
+    #[cfg_attr(feature = "serde", serde(rename = "0x1", alias = "0x01"))]
     Eip2930(Signed<TxEip2930>),
     /// A [`TxEip1559`] tagged with type 2.
+    #[cfg_attr(feature = "serde", serde(rename = "0x2", alias = "0x02"))]
     Eip1559(Signed<TxEip1559>),
     /// A TxEip4844 tagged with type 3.
     /// An EIP-4844 transaction has two network representations:
@@ -76,6 +99,7 @@ pub enum TxEnvelope {
     ///
     /// 2 - The transaction with a sidecar, which is the form used to
     /// send transactions to the network.
+    #[cfg_attr(feature = "serde", serde(rename = "0x3", alias = "0x03"))]
     Eip4844(Signed<TxEip4844Variant>),
 }
 
@@ -106,23 +130,110 @@ impl From<Signed<TxEip4844Variant>> for TxEnvelope {
 impl From<Signed<TxEip4844>> for TxEnvelope {
     fn from(v: Signed<TxEip4844>) -> Self {
         let (tx, signature, hash) = v.into_parts();
-        Self::Eip4844(Signed::new_unchecked(TxEip4844Variant::TxEip4844(tx), signature, hash))
+        Self::Eip4844(Signed::new_unchecked(tx.into(), signature, hash))
     }
 }
 
 impl From<Signed<TxEip4844WithSidecar>> for TxEnvelope {
     fn from(v: Signed<TxEip4844WithSidecar>) -> Self {
         let (tx, signature, hash) = v.into_parts();
-        Self::Eip4844(Signed::new_unchecked(
-            TxEip4844Variant::TxEip4844WithSidecar(tx),
-            signature,
-            hash,
-        ))
+        Self::Eip4844(Signed::new_unchecked(tx.into(), signature, hash))
     }
 }
 
 impl TxEnvelope {
+    /// Returns true if the transaction is a legacy transaction.
+    #[inline]
+    pub const fn is_legacy(&self) -> bool {
+        matches!(self, Self::Legacy(_))
+    }
+
+    /// Returns true if the transaction is an EIP-2930 transaction.
+    #[inline]
+    pub const fn is_eip2930(&self) -> bool {
+        matches!(self, Self::Eip2930(_))
+    }
+
+    /// Returns true if the transaction is an EIP-1559 transaction.
+    #[inline]
+    pub const fn is_eip1559(&self) -> bool {
+        matches!(self, Self::Eip1559(_))
+    }
+
+    /// Returns true if the transaction is an EIP-4844 transaction.
+    #[inline]
+    pub const fn is_eip4844(&self) -> bool {
+        matches!(self, Self::Eip4844(_))
+    }
+
+    /// Returns the [`TxLegacy`] variant if the transaction is a legacy transaction.
+    pub const fn as_legacy(&self) -> Option<&Signed<TxLegacy>> {
+        match self {
+            Self::Legacy(tx) => Some(tx),
+            _ => None,
+        }
+    }
+
+    /// Returns the [`TxEip2930`] variant if the transaction is an EIP-2930 transaction.
+    pub const fn as_eip2930(&self) -> Option<&Signed<TxEip2930>> {
+        match self {
+            Self::Eip2930(tx) => Some(tx),
+            _ => None,
+        }
+    }
+
+    /// Returns the [`TxEip1559`] variant if the transaction is an EIP-1559 transaction.
+    pub const fn as_eip1559(&self) -> Option<&Signed<TxEip1559>> {
+        match self {
+            Self::Eip1559(tx) => Some(tx),
+            _ => None,
+        }
+    }
+
+    /// Returns the [`TxEip4844`] variant if the transaction is an EIP-4844 transaction.
+    pub const fn as_eip4844(&self) -> Option<&Signed<TxEip4844Variant>> {
+        match self {
+            Self::Eip4844(tx) => Some(tx),
+            _ => None,
+        }
+    }
+
+    /// Recover the signer of the transaction.
+    #[cfg(feature = "k256")]
+    pub fn recover_signer(
+        &self,
+    ) -> Result<alloy_primitives::Address, alloy_primitives::SignatureError> {
+        match self {
+            Self::Legacy(tx) => tx.recover_signer(),
+            Self::Eip2930(tx) => tx.recover_signer(),
+            Self::Eip1559(tx) => tx.recover_signer(),
+            Self::Eip4844(tx) => tx.recover_signer(),
+        }
+    }
+
+    /// Calculate the signing hash for the transaction.
+    pub fn signature_hash(&self) -> B256 {
+        match self {
+            Self::Legacy(tx) => tx.signature_hash(),
+            Self::Eip2930(tx) => tx.signature_hash(),
+            Self::Eip1559(tx) => tx.signature_hash(),
+            Self::Eip4844(tx) => tx.signature_hash(),
+        }
+    }
+
+    /// Return the hash of the inner Signed.
+    #[doc(alias = "transaction_hash")]
+    pub const fn tx_hash(&self) -> &B256 {
+        match self {
+            Self::Legacy(tx) => tx.hash(),
+            Self::Eip2930(tx) => tx.hash(),
+            Self::Eip1559(tx) => tx.hash(),
+            Self::Eip4844(tx) => tx.hash(),
+        }
+    }
+
     /// Return the [`TxType`] of the inner txn.
+    #[doc(alias = "transaction_type")]
     pub const fn tx_type(&self) -> TxType {
         match self {
             Self::Legacy(_) => TxType::Legacy,
@@ -193,24 +304,29 @@ impl Encodable for TxEnvelope {
 
 impl Decodable for TxEnvelope {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        Self::network_decode(buf)
+        match Self::network_decode(buf) {
+            Ok(t) => Ok(t),
+            Err(Eip2718Error::RlpError(e)) => Err(e),
+            Err(Eip2718Error::UnexpectedType(_)) => {
+                Err(alloy_rlp::Error::Custom("unexpected tx type"))
+            }
+            _ => Err(alloy_rlp::Error::Custom("unknown error decoding tx envelope")),
+        }
     }
 }
 
 impl Decodable2718 for TxEnvelope {
-    fn typed_decode(ty: u8, buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+    fn typed_decode(ty: u8, buf: &mut &[u8]) -> Eip2718Result<Self> {
         match ty.try_into().map_err(|_| alloy_rlp::Error::Custom("unexpected tx type"))? {
-            TxType::Eip2930 => Ok(Self::Eip2930(TxEip2930::decode_signed_fields(buf)?)),
-            TxType::Eip1559 => Ok(Self::Eip1559(TxEip1559::decode_signed_fields(buf)?)),
-            TxType::Eip4844 => Ok(Self::Eip4844(TxEip4844Variant::decode_signed_fields(buf)?)),
-            TxType::Legacy => {
-                Err(alloy_rlp::Error::Custom("type-0 eip2718 transactions are not supported"))
-            }
+            TxType::Eip2930 => Ok(TxEip2930::decode_signed_fields(buf)?.into()),
+            TxType::Eip1559 => Ok(TxEip1559::decode_signed_fields(buf)?.into()),
+            TxType::Eip4844 => Ok(TxEip4844Variant::decode_signed_fields(buf)?.into()),
+            TxType::Legacy => Err(Eip2718Error::UnexpectedType(0)),
         }
     }
 
-    fn fallback_decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        Ok(TxEnvelope::Legacy(TxLegacy::decode_signed_fields(buf)?))
+    fn fallback_decode(buf: &mut &[u8]) -> Eip2718Result<Self> {
+        Ok(TxLegacy::decode_signed_fields(buf)?.into())
     }
 }
 
@@ -218,9 +334,9 @@ impl Encodable2718 for TxEnvelope {
     fn type_flag(&self) -> Option<u8> {
         match self {
             Self::Legacy(_) => None,
-            Self::Eip2930(_) => Some(TxType::Eip2930 as u8),
-            Self::Eip1559(_) => Some(TxType::Eip1559 as u8),
-            Self::Eip4844(_) => Some(TxType::Eip4844 as u8),
+            Self::Eip2930(_) => Some(TxType::Eip2930.into()),
+            Self::Eip1559(_) => Some(TxType::Eip1559.into()),
+            Self::Eip4844(_) => Some(TxType::Eip4844.into()),
         }
     }
 
@@ -231,14 +347,14 @@ impl Encodable2718 for TxEnvelope {
     fn encode_2718(&self, out: &mut dyn alloy_rlp::BufMut) {
         match self {
             // Legacy transactions have no difference between network and 2718
-            TxEnvelope::Legacy(tx) => tx.tx().encode_with_signature_fields(tx.signature(), out),
-            TxEnvelope::Eip2930(tx) => {
+            Self::Legacy(tx) => tx.tx().encode_with_signature_fields(tx.signature(), out),
+            Self::Eip2930(tx) => {
                 tx.tx().encode_with_signature(tx.signature(), out, false);
             }
-            TxEnvelope::Eip1559(tx) => {
+            Self::Eip1559(tx) => {
                 tx.tx().encode_with_signature(tx.signature(), out, false);
             }
-            TxEnvelope::Eip4844(tx) => {
+            Self::Eip4844(tx) => {
                 tx.tx().encode_with_signature(tx.signature(), out, false);
             }
         }
@@ -250,8 +366,13 @@ mod tests {
     use super::*;
     use crate::transaction::SignableTransaction;
     use alloy_eips::eip2930::{AccessList, AccessListItem};
-    use alloy_primitives::{hex, Address, Bytes, Signature, TxKind, B256, U256};
-    use std::{fs, path::PathBuf};
+    use alloy_primitives::{hex, Address, Signature, U256};
+    #[allow(unused_imports)]
+    use alloy_primitives::{Bytes, TxKind};
+    use std::{fs, path::PathBuf, vec};
+
+    #[cfg(not(feature = "std"))]
+    use std::vec::Vec;
 
     #[test]
     #[cfg(feature = "k256")]
@@ -360,9 +481,9 @@ mod tests {
             max_fee_per_gas: 3,
             max_priority_fee_per_gas: 4,
             gas_limit: 5,
-            to: TxKind::Call(Address::left_padding_from(&[6])),
+            to: Address::left_padding_from(&[6]).into(),
             value: U256::from(7_u64),
-            input: Bytes::from(vec![8]),
+            input: vec![8].into(),
             access_list: Default::default(),
         };
         test_encode_decode_roundtrip(tx);
@@ -375,15 +496,38 @@ mod tests {
             nonce: 2,
             gas_price: 3,
             gas_limit: 4,
-            to: TxKind::Call(Address::left_padding_from(&[5])),
+            to: Address::left_padding_from(&[5]).into(),
             value: U256::from(6_u64),
-            input: Bytes::from(vec![7]),
+            input: vec![7].into(),
             access_list: AccessList(vec![AccessListItem {
                 address: Address::left_padding_from(&[8]),
                 storage_keys: vec![B256::left_padding_from(&[9])],
             }]),
         };
         test_encode_decode_roundtrip(tx);
+    }
+
+    #[test]
+    fn test_encode_decode_transaction_list() {
+        let signature = Signature::test_signature();
+        let tx = TxEnvelope::Eip1559(
+            TxEip1559 {
+                chain_id: 1u64,
+                nonce: 2,
+                max_fee_per_gas: 3,
+                max_priority_fee_per_gas: 4,
+                gas_limit: 5,
+                to: Address::left_padding_from(&[6]).into(),
+                value: U256::from(7_u64),
+                input: vec![8].into(),
+                access_list: Default::default(),
+            }
+            .into_signed(signature),
+        );
+        let transactions = vec![tx.clone(), tx];
+        let encoded = alloy_rlp::encode(&transactions);
+        let decoded = Vec::<TxEnvelope>::decode(&mut &encoded[..]).unwrap();
+        assert_eq!(transactions, decoded);
     }
 
     #[test]
@@ -398,5 +542,113 @@ mod tests {
         let encoded = tx.encoded_2718();
         assert_eq!(encoded, hex_data);
         assert_eq!(tx.encode_2718_len(), hex_data.len());
+    }
+
+    #[cfg(feature = "serde")]
+    fn test_serde_roundtrip<T: SignableTransaction<Signature>>(tx: T)
+    where
+        Signed<T>: Into<TxEnvelope>,
+    {
+        let signature = Signature::test_signature();
+        let tx_envelope: TxEnvelope = tx.into_signed(signature).into();
+
+        let serialized = serde_json::to_string(&tx_envelope).unwrap();
+        let deserialized: TxEnvelope = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(tx_envelope, deserialized);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_serde_roundtrip_legacy() {
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce: 100,
+            gas_price: 3_000_000_000,
+            gas_limit: 50_000,
+            to: Address::default().into(),
+            value: U256::from(10e18),
+            input: Bytes::new(),
+        };
+        test_serde_roundtrip(tx);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_serde_roundtrip_eip1559() {
+        let tx = TxEip1559 {
+            chain_id: 1,
+            nonce: 100,
+            max_fee_per_gas: 50_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000_000,
+            gas_limit: 1_000_000,
+            to: TxKind::Create,
+            value: U256::from(10e18),
+            input: Bytes::new(),
+            access_list: AccessList(vec![AccessListItem {
+                address: Address::random(),
+                storage_keys: vec![B256::random()],
+            }]),
+        };
+        test_serde_roundtrip(tx);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_serde_roundtrip_eip2930() {
+        let tx = TxEip2930 {
+            chain_id: u64::MAX,
+            nonce: u64::MAX,
+            gas_price: u128::MAX,
+            gas_limit: u128::MAX,
+            to: Address::random().into(),
+            value: U256::MAX,
+            input: Bytes::new(),
+            access_list: Default::default(),
+        };
+        test_serde_roundtrip(tx);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_serde_roundtrip_eip4844() {
+        let tx = TxEip4844Variant::TxEip4844(TxEip4844 {
+            chain_id: 1,
+            nonce: 100,
+            max_fee_per_gas: 50_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000_000,
+            gas_limit: 1_000_000,
+            to: Address::random(),
+            value: U256::from(10e18),
+            input: Bytes::new(),
+            access_list: AccessList(vec![AccessListItem {
+                address: Address::random(),
+                storage_keys: vec![B256::random()],
+            }]),
+            blob_versioned_hashes: vec![B256::random()],
+            max_fee_per_blob_gas: 0,
+        });
+        test_serde_roundtrip(tx);
+
+        let tx = TxEip4844Variant::TxEip4844WithSidecar(TxEip4844WithSidecar {
+            tx: TxEip4844 {
+                chain_id: 1,
+                nonce: 100,
+                max_fee_per_gas: 50_000_000_000,
+                max_priority_fee_per_gas: 1_000_000_000_000,
+                gas_limit: 1_000_000,
+                to: Address::random(),
+                value: U256::from(10e18),
+                input: Bytes::new(),
+                access_list: AccessList(vec![AccessListItem {
+                    address: Address::random(),
+                    storage_keys: vec![B256::random()],
+                }]),
+                blob_versioned_hashes: vec![B256::random()],
+                max_fee_per_blob_gas: 0,
+            },
+            sidecar: Default::default(),
+        });
+        test_serde_roundtrip(tx);
     }
 }

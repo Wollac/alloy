@@ -1,6 +1,6 @@
 use alloy_primitives::B256;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// A consensus hashable item, with its memoized hash.
 ///
 /// We do not implement
@@ -26,7 +26,6 @@ impl<T> Sealed<T> {
     }
 
     /// Decompose into parts.
-    #[allow(clippy::missing_const_for_fn)] // false positive
     pub fn into_parts(self) -> (T, B256) {
         (self.inner, self.seal)
     }
@@ -50,7 +49,7 @@ impl<T> Sealed<T> {
     }
 }
 
-/// Sealeable objects.
+/// Sealable objects.
 pub trait Sealable: Sized {
     /// Calculate the seal hash, this may be slow.
     fn hash(&self) -> B256;

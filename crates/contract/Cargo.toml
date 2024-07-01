@@ -11,13 +11,20 @@ homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
+
 [dependencies]
 alloy-network.workspace = true
 alloy-provider.workspace = true
-alloy-rpc-types.workspace = true
+alloy-rpc-types-eth.workspace = true
 alloy-transport.workspace = true
 
-alloy-dyn-abi.workspace = true
+alloy-dyn-abi = { workspace = true, features = ["std"] }
 alloy-json-abi.workspace = true
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
@@ -26,10 +33,18 @@ futures-util.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 
+alloy-pubsub = { workspace = true, optional = true }
+
 [dev-dependencies]
-alloy-rpc-client.workspace = true
+alloy-rpc-client = { workspace = true, features = ["pubsub", "ws"] }
 alloy-transport-http.workspace = true
 alloy-node-bindings.workspace = true
-test-utils.workspace = true
+alloy-provider = { workspace = true, features = ["anvil-node"] }
+
 reqwest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+
+[features]
+pubsub = ["alloy-provider/pubsub", "dep:alloy-pubsub"]

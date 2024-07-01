@@ -1,5 +1,11 @@
+//! Transaction types.
+
 use crate::Signed;
 use alloy_primitives::{keccak256, ChainId, TxKind, B256, U256};
+use core::any;
+
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 
 mod eip1559;
 pub use eip1559::TxEip1559;
@@ -7,13 +13,16 @@ pub use eip1559::TxEip1559;
 mod eip2930;
 pub use eip2930::TxEip2930;
 
-mod eip4844;
+/// [EIP-4844] constants, helpers, and types.
+pub mod eip4844;
+
+pub use alloy_eips::eip4844::{
+    builder::{SidecarBuilder, SidecarCoder, SimpleCoder},
+    utils as eip4844_utils, Blob, BlobTransactionSidecar, Bytes48,
+};
 #[cfg(feature = "kzg")]
 pub use eip4844::BlobTransactionValidationError;
-pub use eip4844::{
-    utils as eip4844_utils, BlobTransactionSidecar, SidecarBuilder, SidecarCoder, SimpleCoder,
-    TxEip4844, TxEip4844Variant, TxEip4844WithSidecar,
-};
+pub use eip4844::{TxEip4844, TxEip4844Variant, TxEip4844WithSidecar};
 
 mod envelope;
 pub use envelope::{TxEnvelope, TxType};
@@ -25,16 +34,8 @@ mod typed;
 pub use typed::TypedTransaction;
 
 /// Represents a minimal EVM transaction.
-pub trait Transaction: std::any::Any + Send + Sync + 'static {
-    /// Get `data`.
-    fn input(&self) -> &[u8];
-
-    /// Get `to`.
-    fn to(&self) -> TxKind;
-
-    /// Get `value`.
-    fn value(&self) -> U256;
-
+#[doc(alias = "Tx")]
+pub trait Transaction: any::Any + Send + Sync + 'static {
     /// Get `chain_id`.
     fn chain_id(&self) -> Option<ChainId>;
 
@@ -42,10 +43,19 @@ pub trait Transaction: std::any::Any + Send + Sync + 'static {
     fn nonce(&self) -> u64;
 
     /// Get `gas_limit`.
-    fn gas_limit(&self) -> u64;
+    fn gas_limit(&self) -> u128;
 
     /// Get `gas_price`.
-    fn gas_price(&self) -> Option<U256>;
+    fn gas_price(&self) -> Option<u128>;
+
+    /// Get `to`.
+    fn to(&self) -> TxKind;
+
+    /// Get `value`.
+    fn value(&self) -> U256;
+
+    /// Get `data`.
+    fn input(&self) -> &[u8];
 }
 
 /// A signable transaction.
@@ -54,7 +64,13 @@ pub trait Transaction: std::any::Any + Send + Sync + 'static {
 /// [`alloy_primitives::Signature`], however, it may be different for future EIP-2718 transaction
 /// types, or in other networks. For example, in Optimism, the deposit transaction signature is the
 /// unit type `()`.
+#[doc(alias = "SignableTx", alias = "TxSignable")]
 pub trait SignableTransaction<Signature>: Transaction {
+    /// True if the transaction uses EIP-155 signatures.
+    fn use_eip155(&self) -> bool {
+        false
+    }
+
     /// Sets `chain_id`.
     ///
     /// Prefer [`set_chain_id_checked`](Self::set_chain_id_checked).
@@ -107,8 +123,8 @@ pub trait SignableTransaction<Signature>: Transaction {
 // TODO: Remove in favor of dyn trait upcasting (TBD, see https://github.com/rust-lang/rust/issues/65991#issuecomment-1903120162)
 #[doc(hidden)]
 impl<S: 'static> dyn SignableTransaction<S> {
-    pub fn __downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
-        if std::any::Any::type_id(self) == std::any::TypeId::of::<T>() {
+    pub fn __downcast_ref<T: any::Any>(&self) -> Option<&T> {
+        if any::Any::type_id(self) == any::TypeId::of::<T>() {
             unsafe { Some(&*(self as *const _ as *const T)) }
         } else {
             None

@@ -54,11 +54,8 @@ where
     type Output = TransportResult<Resp>;
 
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        let resp = ready!(Pin::new(&mut self.rx).poll(cx));
-
-        Poll::Ready(match resp {
+        Pin::new(&mut self.rx).poll(cx).map(|resp| match resp {
             Ok(resp) => try_deserialize_ok(resp),
-
             Err(e) => Err(TransportErrorKind::custom(e)),
         })
     }
@@ -164,7 +161,7 @@ where
         };
 
         if let Err(e) = task::ready!(transport.poll_ready(cx)) {
-            self.set(BatchFuture::Complete);
+            self.set(Self::Complete);
             return Poll::Ready(Err(e));
         }
 
@@ -174,7 +171,7 @@ where
         let req = std::mem::replace(requests, RequestPacket::Batch(Vec::with_capacity(0)));
 
         let fut = transport.call(req);
-        self.set(BatchFuture::AwaitingResponse { channels, fut });
+        self.set(Self::AwaitingResponse { channels, fut });
         cx.waker().wake_by_ref();
         Poll::Pending
     }
@@ -191,7 +188,7 @@ where
         let responses = match ready!(fut.poll(cx)) {
             Ok(responses) => responses,
             Err(e) => {
-                self.set(BatchFuture::Complete);
+                self.set(Self::Complete);
                 return Poll::Ready(Err(e));
             }
         };
@@ -218,7 +215,7 @@ where
             let _ = tx.send(Err(TransportErrorKind::missing_batch_response(id)));
         }
 
-        self.set(BatchFuture::Complete);
+        self.set(Self::Complete);
         Poll::Ready(Ok(()))
     }
 
@@ -227,12 +224,12 @@ where
         _cx: &mut task::Context<'_>,
     ) -> Poll<<Self as Future>::Output> {
         let e = if let CallStateProj::SerError(e) = self.as_mut().project() {
-            e.take().expect("No error. This is a bug.")
+            e.take().expect("no error")
         } else {
             unreachable!("Called poll_ser_error in incorrect state")
         };
 
-        self.set(BatchFuture::Complete);
+        self.set(Self::Complete);
         Poll::Ready(Err(e))
     }
 }
@@ -244,15 +241,15 @@ where
     type Output = TransportResult<()>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        if matches!(*self.as_mut(), BatchFuture::Prepared { .. }) {
+        if matches!(*self.as_mut(), Self::Prepared { .. }) {
             return self.poll_prepared(cx);
         }
 
-        if matches!(*self.as_mut(), BatchFuture::AwaitingResponse { .. }) {
+        if matches!(*self.as_mut(), Self::AwaitingResponse { .. }) {
             return self.poll_awaiting_response(cx);
         }
 
-        if matches!(*self.as_mut(), BatchFuture::SerError(_)) {
+        if matches!(*self.as_mut(), Self::SerError(_)) {
             return self.poll_ser_error(cx);
         }
 

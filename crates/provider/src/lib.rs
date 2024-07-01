@@ -3,23 +3,24 @@
     html_logo_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/alloy.jpg",
     html_favicon_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/favicon.ico"
 )]
-#![warn(
-    missing_copy_implementations,
-    missing_debug_implementations,
-    missing_docs,
-    unreachable_pub,
-    clippy::missing_const_for_fn,
-    rustdoc::all
-)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![deny(unused_must_use, rust_2018_idioms)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use alloy_transport_http::Http;
-use reqwest::Client as ReqwestClient;
+#[cfg(any(test, feature = "reqwest"))]
+/// Type alias for a [`RootProvider`] using the [`Http`] transport and a
+/// reqwest client.
+///
+/// [`Http`]: alloy_transport_http::Http
+pub type ReqwestProvider<N = alloy_network::Ethereum> =
+    crate::RootProvider<alloy_transport_http::Http<reqwest::Client>, N>;
 
-/// Type alias for a [`RootProvider`] using the [`Http`] transport.
-pub type HttpProvider<N> = RootProvider<N, Http<ReqwestClient>>;
+#[cfg(feature = "hyper")]
+/// Type alias for a [`RootProvider`] using the [`Http`] transport and a hyper
+/// client.
+///
+/// [`Http`]: alloy_transport_http::Http
+pub type HyperProvider<N = alloy_network::Ethereum> =
+    crate::RootProvider<alloy_transport_http::Http<alloy_transport_http::HyperClient>, N>;
 
 #[macro_use]
 extern crate tracing;
@@ -27,6 +28,9 @@ extern crate tracing;
 mod builder;
 pub use builder::{Identity, ProviderBuilder, ProviderLayer, Stack};
 
+pub mod ext;
+
+pub mod fillers;
 pub mod layers;
 
 mod chain;
@@ -35,9 +39,18 @@ mod heart;
 pub use heart::{PendingTransaction, PendingTransactionBuilder, PendingTransactionConfig};
 
 mod provider;
-pub use provider::{FilterPollerBuilder, Provider, RootProvider};
+pub use provider::{
+    builder, EthCall, FilterPollerBuilder, Provider, RootProvider, RpcWithBlock, SendableTx,
+    WalletProvider,
+};
 
 pub mod utils;
 
 #[doc(no_inline)]
 pub use alloy_network::{self as network, Network};
+
+#[cfg(feature = "ws")]
+pub use alloy_rpc_client::WsConnect;
+
+#[cfg(feature = "ipc")]
+pub use alloy_rpc_client::IpcConnect;

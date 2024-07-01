@@ -68,7 +68,7 @@ impl fmt::Debug for AwsSigner {
 }
 
 /// Errors thrown by [`AwsSigner`].
-#[derive(thiserror::Error, Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AwsSignerError {
     /// Thrown when the AWS KMS API returns a signing error.
     #[error(transparent)]
@@ -96,7 +96,12 @@ pub enum AwsSignerError {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl alloy_network::TxSigner<Signature> for AwsSigner {
+    fn address(&self) -> Address {
+        self.address
+    }
+
     #[inline]
+    #[doc(alias = "sign_tx")]
     async fn sign_transaction(
         &self,
         tx: &mut dyn SignableTransaction<Signature>,
@@ -139,7 +144,7 @@ impl AwsSigner {
         kms: Client,
         key_id: String,
         chain_id: Option<ChainId>,
-    ) -> Result<AwsSigner, AwsSignerError> {
+    ) -> Result<Self, AwsSignerError> {
         let resp = request_get_pubkey(&kms, key_id.clone()).await?;
         let pubkey = decode_pubkey(resp)?;
         let address = alloy_signer::utils::public_key_to_address(&pubkey);

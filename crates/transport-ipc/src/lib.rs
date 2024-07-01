@@ -3,27 +3,21 @@
     html_logo_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/alloy.jpg",
     html_favicon_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/favicon.ico"
 )]
-#![warn(
-    missing_copy_implementations,
-    missing_debug_implementations,
-    missing_docs,
-    unreachable_pub,
-    clippy::missing_const_for_fn,
-    rustdoc::all
-)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![deny(unused_must_use, rust_2018_idioms)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 #[macro_use]
 extern crate tracing;
 
 use bytes::{Buf, BytesMut};
-use futures::{ready, AsyncRead, AsyncWriteExt, StreamExt};
-use interprocess::local_socket::{tokio::LocalSocketStream, ToLocalSocketName};
+use futures::{ready, StreamExt};
+use interprocess::local_socket::{tokio::prelude::*, Name};
 use std::task::Poll::Ready;
-use tokio::select;
-use tokio_util::compat::FuturesAsyncReadCompatExt;
+use tokio::{
+    io::{AsyncRead, AsyncWriteExt},
+    select,
+};
+use tokio_util::io::poll_read_buf;
 
 mod connect;
 pub use connect::IpcConnect;
@@ -37,31 +31,24 @@ type Result<T> = std::result::Result<T, std::io::Error>;
 
 /// An IPC backend task.
 struct IpcBackend {
-    pub(crate) socket: LocalSocketStream,
+    pub(crate) stream: LocalSocketStream,
 
     pub(crate) interface: alloy_pubsub::ConnectionInterface,
 }
 
 impl IpcBackend {
     /// Connect to a local socket. Either a unix socket or a windows named pipe.
-    async fn connect<'a, I>(name: &I) -> Result<alloy_pubsub::ConnectionHandle>
-    where
-        // TODO: remove bound on next interprocess crate release
-        I: ToLocalSocketName<'a> + Clone,
-    {
-        let socket = LocalSocketStream::connect(name.clone()).await?;
+    async fn connect(name: Name<'_>) -> Result<alloy_pubsub::ConnectionHandle> {
+        let stream = LocalSocketStream::connect(name).await?;
         let (handle, interface) = alloy_pubsub::ConnectionHandle::new();
-
-        let backend = IpcBackend { socket, interface };
-
+        let backend = Self { stream, interface };
         backend.spawn();
-
         Ok(handle)
     }
 
     fn spawn(mut self) {
         let fut = async move {
-            let (read, mut writer) = self.socket.into_split();
+            let (read, mut writer) = self.stream.split();
             let mut read = ReadJsonStream::new(read).fuse();
 
             let err = loop {
@@ -109,49 +96,41 @@ impl IpcBackend {
     }
 }
 
+/// Default capacity for the IPC buffer.
+const CAPACITY: usize = 4096;
+
 /// A stream of JSON-RPC items, read from an [`AsyncRead`] stream.
 #[derive(Debug)]
 #[pin_project::pin_project]
 pub struct ReadJsonStream<T> {
     /// The underlying reader.
     #[pin]
-    reader: tokio_util::compat::Compat<T>,
+    reader: T,
     /// A buffer for reading data from the reader.
     buf: BytesMut,
     /// Whether the buffer has been drained.
     drained: bool,
 }
 
-impl<T> ReadJsonStream<T>
-where
-    T: AsyncRead,
-{
+impl<T: AsyncRead> ReadJsonStream<T> {
     fn new(reader: T) -> Self {
-        Self { reader: reader.compat(), buf: BytesMut::with_capacity(4096), drained: true }
+        Self { reader, buf: BytesMut::with_capacity(CAPACITY), drained: true }
     }
 }
 
-impl<T> From<T> for ReadJsonStream<T>
-where
-    T: AsyncRead,
-{
+impl<T: AsyncRead> From<T> for ReadJsonStream<T> {
     fn from(reader: T) -> Self {
         Self::new(reader)
     }
 }
 
-impl<T> futures::stream::Stream for ReadJsonStream<T>
-where
-    T: AsyncRead,
-{
+impl<T: AsyncRead> futures::stream::Stream for ReadJsonStream<T> {
     type Item = alloy_json_rpc::PubSubItem;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        use tokio_util::io::poll_read_buf;
-
         let mut this = self.project();
 
         loop {
@@ -170,7 +149,15 @@ where
                         return Ready(Some(response));
                     }
                     Some(Err(err)) => {
-                        if err.is_eof() {
+                        if err.is_data() {
+                            trace!(
+                                buffer = %String::from_utf8_lossy(this.buf.as_ref()),
+                                "IPC buffer contains invalid JSON data",
+                            );
+
+                            // this happens if the deserializer is unable to decode a partial object
+                            *this.drained = true;
+                        } else if err.is_eof() {
                             trace!("partial object in IPC buffer");
                             // nothing decoded
                             *this.drained = true;
@@ -211,5 +198,86 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::poll_fn;
+
+    #[tokio::test]
+    async fn test_partial_stream() {
+        let mock = tokio_test::io::Builder::new()
+            // partial object
+            .read(b"{\"jsonrpc\":\"2.0\",\"method\":\"eth_subscription\"")
+            // trigger pending read
+            .wait(std::time::Duration::from_millis(1))
+            // complete object
+            .read(r#", "params": {"subscription": "0xcd0c3e8af590364c09d0fa6a1210faf5", "result": {"difficulty": "0xd9263f42a87", "uncles": []}} }"#.as_bytes())
+            .build();
+
+        let mut reader = ReadJsonStream::new(mock);
+        poll_fn(|cx| {
+            let res = reader.poll_next_unpin(cx);
+            assert!(res.is_pending());
+            Ready(())
+        })
+        .await;
+        let _obj = reader.next().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_large_invalid() {
+        let mock = tokio_test::io::Builder::new()
+            // partial object
+            .read(b"{\"jsonrpc\":\"2.0\",\"method\":\"eth_subscription\"")
+            // trigger pending read
+            .wait(std::time::Duration::from_millis(1))
+            // fill buffer with invalid data
+            .read(vec![b'a'; CAPACITY].as_ref())
+            .build();
+
+        let mut reader = ReadJsonStream::new(mock);
+        poll_fn(|cx| {
+            let res = reader.poll_next_unpin(cx);
+            assert!(res.is_pending());
+            Ready(())
+        })
+        .await;
+        let obj = reader.next().await;
+        assert!(obj.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_large_valid() {
+        let header = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"0x";
+        let filling_zeros = header
+            .iter()
+            .chain(vec![b'0'; CAPACITY - header.len()].iter())
+            .copied()
+            .collect::<Vec<_>>();
+
+        let first_page = filling_zeros.as_ref();
+        let second_page = b"\"}";
+
+        let mock = tokio_test::io::Builder::new()
+            // partial object
+            .read(first_page)
+            // trigger pending read
+            .wait(std::time::Duration::from_millis(1))
+            // complete object
+            .read(second_page)
+            .build();
+
+        let mut reader = ReadJsonStream::new(mock);
+        poll_fn(|cx| {
+            let res = reader.poll_next_unpin(cx);
+            assert!(res.is_pending());
+            Ready(())
+        })
+        .await;
+        let obj = reader.next().await;
+        assert!(obj.is_some());
     }
 }

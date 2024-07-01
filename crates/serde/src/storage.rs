@@ -19,19 +19,32 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// `eth_getProof` also takes storage keys up to 32 bytes as input, so the `keys` field is
 /// similarly deserialized. However, geth populates the storage proof `key` fields in the response
 /// by mirroring the `key` field used in the input.
-///  * See how `storageKey`s (the input) are populated in the `StorageResult` (the output):
-///  <https://github.com/ethereum/go-ethereum/blob/00a73fbcce3250b87fc4160f3deddc44390848f4/internal/ethapi/api.go#L658-L690>
+///
+/// See how `storageKey`s (the input) are populated in the `StorageResult` (the output):
+/// <https://github.com/ethereum/go-ethereum/blob/00a73fbcce3250b87fc4160f3deddc44390848f4/internal/ethapi/api.go#L658-L690>
 ///
 /// The contained [B256] and From implementation for String are used to preserve the input and
 /// implement this behavior from geth.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "U256", into = "String")]
 pub struct JsonStorageKey(pub B256);
+
+impl From<B256> for JsonStorageKey {
+    fn from(value: B256) -> Self {
+        Self(value)
+    }
+}
+
+impl From<[u8; 32]> for JsonStorageKey {
+    fn from(value: [u8; 32]) -> Self {
+        B256::from(value).into()
+    }
+}
 
 impl From<U256> for JsonStorageKey {
     fn from(value: U256) -> Self {
         // SAFETY: Address (B256) and U256 have the same number of bytes
-        JsonStorageKey(B256::from(value.to_be_bytes()))
+        value.to_be_bytes().into()
     }
 }
 
@@ -53,7 +66,7 @@ impl From<JsonStorageKey> for String {
         if bytes.is_empty() {
             return "0x0".to_string();
         }
-        let mut hex = String::with_capacity(2 + bytes.len() * 2);
+        let mut hex = Self::with_capacity(2 + bytes.len() * 2);
         hex.push_str("0x");
         for byte in bytes {
             write!(hex, "{:02x}", byte).unwrap();

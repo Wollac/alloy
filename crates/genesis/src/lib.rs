@@ -5,51 +5,36 @@
     html_logo_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/alloy.jpg",
     html_favicon_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/favicon.ico"
 )]
-#![warn(
-    missing_copy_implementations,
-    missing_debug_implementations,
-    missing_docs,
-    unreachable_pub,
-    clippy::missing_const_for_fn,
-    rustdoc::all
-)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![deny(unused_must_use, rust_2018_idioms)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
-
 use alloy_primitives::{Address, Bytes, B256, U256};
-use alloy_serde::{
-    json_u256::{deserialize_json_ttd_opt, deserialize_json_u256},
-    num::{u64_hex_or_decimal, u64_hex_or_decimal_opt},
-    storage::deserialize_storage_map,
-};
+use alloy_serde::{storage::deserialize_storage_map, ttd::deserialize_json_ttd_opt, OtherFields};
 use serde::{Deserialize, Serialize};
 
 /// The genesis block specification.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Genesis {
     /// The fork configuration for this network.
     #[serde(default)]
     pub config: ChainConfig,
     /// The genesis header nonce.
-    #[serde(with = "u64_hex_or_decimal")]
+    #[serde(with = "alloy_serde::quantity")]
     pub nonce: u64,
     /// The genesis header timestamp.
-    #[serde(with = "u64_hex_or_decimal")]
+    #[serde(with = "alloy_serde::quantity")]
     pub timestamp: u64,
     /// The genesis header extra data.
     pub extra_data: Bytes,
     /// The genesis header gas limit.
-    #[serde(with = "u64_hex_or_decimal")]
-    pub gas_limit: u64,
+    #[serde(with = "alloy_serde::quantity")]
+    pub gas_limit: u128,
     /// The genesis header difficulty.
-    #[serde(deserialize_with = "deserialize_json_u256")]
     pub difficulty: U256,
     /// The genesis header mix hash.
     pub mix_hash: B256,
@@ -65,16 +50,16 @@ pub struct Genesis {
     // should NOT be set in a real genesis file, but are included here for compatibility with
     // consensus tests, which have genesis files with these fields populated.
     /// The genesis header base fee
-    #[serde(skip_serializing_if = "Option::is_none", with = "u64_hex_or_decimal_opt")]
-    pub base_fee_per_gas: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "alloy_serde::quantity::opt")]
+    pub base_fee_per_gas: Option<u128>,
     /// The genesis header excess blob gas
-    #[serde(skip_serializing_if = "Option::is_none", with = "u64_hex_or_decimal_opt")]
-    pub excess_blob_gas: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "alloy_serde::quantity::opt")]
+    pub excess_blob_gas: Option<u128>,
     /// The genesis header blob gas used
-    #[serde(skip_serializing_if = "Option::is_none", with = "u64_hex_or_decimal_opt")]
-    pub blob_gas_used: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "alloy_serde::quantity::opt")]
+    pub blob_gas_used: Option<u128>,
     /// The genesis block number
-    #[serde(skip_serializing_if = "Option::is_none", with = "u64_hex_or_decimal_opt")]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "alloy_serde::quantity::opt")]
     pub number: Option<u64>,
 }
 
@@ -83,7 +68,7 @@ impl Genesis {
     /// and funds the given address with max coins.
     ///
     /// Enables all hard forks up to London at genesis.
-    pub fn clique_genesis(chain_id: u64, signer_addr: Address) -> Genesis {
+    pub fn clique_genesis(chain_id: u64, signer_addr: Address) -> Self {
         // set up a clique config with an instant sealing period and short (8 block) epoch
         let clique_config = CliqueConfig { period: Some(0), epoch: Some(8) };
 
@@ -128,9 +113,9 @@ impl Genesis {
         // proposer signature. Because the genesis does not have a proposer signature, it will be
         // populated with zeros.
         let extra_data_bytes = [&[0u8; 32][..], signer_addr.as_slice(), &[0u8; 65][..]].concat();
-        let extra_data = Bytes::from(extra_data_bytes);
+        let extra_data = extra_data_bytes.into();
 
-        Genesis {
+        Self {
             config,
             alloc,
             difficulty: U256::from(1),
@@ -159,7 +144,7 @@ impl Genesis {
     }
 
     /// Set the gas limit.
-    pub const fn with_gas_limit(mut self, gas_limit: u64) -> Self {
+    pub const fn with_gas_limit(mut self, gas_limit: u128) -> Self {
         self.gas_limit = gas_limit;
         self
     }
@@ -183,19 +168,19 @@ impl Genesis {
     }
 
     /// Set the base fee.
-    pub const fn with_base_fee(mut self, base_fee: Option<u64>) -> Self {
+    pub const fn with_base_fee(mut self, base_fee: Option<u128>) -> Self {
         self.base_fee_per_gas = base_fee;
         self
     }
 
     /// Set the excess blob gas.
-    pub const fn with_excess_blob_gas(mut self, excess_blob_gas: Option<u64>) -> Self {
+    pub const fn with_excess_blob_gas(mut self, excess_blob_gas: Option<u128>) -> Self {
         self.excess_blob_gas = excess_blob_gas;
         self
     }
 
     /// Set the blob gas used.
-    pub const fn with_blob_gas_used(mut self, blob_gas_used: Option<u64>) -> Self {
+    pub const fn with_blob_gas_used(mut self, blob_gas_used: Option<u128>) -> Self {
         self.blob_gas_used = blob_gas_used;
         self
     }
@@ -212,14 +197,13 @@ impl Genesis {
 }
 
 /// An account in the state of the genesis block.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GenesisAccount {
     /// The nonce of the account at genesis.
-    #[serde(skip_serializing_if = "Option::is_none", with = "u64_hex_or_decimal_opt", default)]
+    #[serde(skip_serializing_if = "Option::is_none", with = "alloy_serde::quantity::opt", default)]
     pub nonce: Option<u64>,
     /// The balance of the account at genesis.
-    #[serde(deserialize_with = "deserialize_json_u256")]
     pub balance: U256,
     /// The account's bytecode at genesis.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -273,24 +257,23 @@ impl GenesisAccount {
 /// See [geth's `ChainConfig`
 /// struct](https://github.com/ethereum/go-ethereum/blob/64dccf7aa411c5c7cd36090c3d9b9892945ae813/params/config.go#L349)
 /// for the source of each field.
-#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ChainConfig {
     /// The network's chain ID.
-    #[serde(default = "mainnet_id")]
     pub chain_id: u64,
 
     /// The homestead switch block (None = no fork, 0 = already homestead).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub homestead_block: Option<u64>,
 
     /// The DAO fork switch block (None = no fork).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub dao_fork_block: Option<u64>,
 
@@ -300,7 +283,7 @@ pub struct ChainConfig {
     /// The [EIP-150](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-150.md) hard fork block (None = no fork).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub eip150_block: Option<u64>,
 
@@ -311,100 +294,107 @@ pub struct ChainConfig {
     /// The [EIP-155](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-155.md) hard fork block.
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub eip155_block: Option<u64>,
 
     /// The [EIP-158](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-158.md) hard fork block.
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub eip158_block: Option<u64>,
 
     /// The Byzantium hard fork block (None = no fork, 0 = already on byzantium).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub byzantium_block: Option<u64>,
 
     /// The Constantinople hard fork block (None = no fork, 0 = already on constantinople).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub constantinople_block: Option<u64>,
 
     /// The Petersburg hard fork block (None = no fork, 0 = already on petersburg).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub petersburg_block: Option<u64>,
 
     /// The Istanbul hard fork block (None = no fork, 0 = already on istanbul).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub istanbul_block: Option<u64>,
 
     /// The Muir Glacier hard fork block (None = no fork, 0 = already on muir glacier).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub muir_glacier_block: Option<u64>,
 
     /// The Berlin hard fork block (None = no fork, 0 = already on berlin).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub berlin_block: Option<u64>,
 
     /// The London hard fork block (None = no fork, 0 = already on london).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub london_block: Option<u64>,
 
     /// The Arrow Glacier hard fork block (None = no fork, 0 = already on arrow glacier).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub arrow_glacier_block: Option<u64>,
 
     /// The Gray Glacier hard fork block (None = no fork, 0 = already on gray glacier).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub gray_glacier_block: Option<u64>,
 
     /// Virtual fork after the merge to use as a network splitter.
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub merge_netsplit_block: Option<u64>,
 
     /// Shanghai switch time (None = no fork, 0 = already on shanghai).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub shanghai_time: Option<u64>,
 
     /// Cancun switch time (None = no fork, 0 = already on cancun).
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "u64_hex_or_decimal_opt::deserialize"
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
     )]
     pub cancun_time: Option<u64>,
+
+    /// Prague switch time (None = no fork, 0 = already on prague).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "alloy_serde::quantity::opt::deserialize"
+    )]
+    pub prague_time: Option<u64>,
 
     /// Total difficulty reached that triggers the merge consensus upgrade.
     #[serde(
@@ -424,6 +414,18 @@ pub struct ChainConfig {
     /// Clique parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clique: Option<CliqueConfig>,
+
+    /// Parlia parameters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parlia: Option<ParliaConfig>,
+
+    /// Additional fields specific to each chain.
+    #[serde(flatten, default)]
+    pub extra_fields: OtherFields,
+
+    /// The deposit contract address
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deposit_contract_address: Option<Address>,
 }
 
 impl ChainConfig {
@@ -517,18 +519,48 @@ impl ChainConfig {
     }
 }
 
-// used only for serde
-#[inline]
-const fn mainnet_id() -> u64 {
-    1
+impl Default for ChainConfig {
+    fn default() -> Self {
+        Self {
+            // mainnet
+            chain_id: 1,
+            homestead_block: None,
+            dao_fork_block: None,
+            dao_fork_support: false,
+            eip150_block: None,
+            eip150_hash: None,
+            eip155_block: None,
+            eip158_block: None,
+            byzantium_block: None,
+            constantinople_block: None,
+            petersburg_block: None,
+            istanbul_block: None,
+            muir_glacier_block: None,
+            berlin_block: None,
+            london_block: None,
+            arrow_glacier_block: None,
+            gray_glacier_block: None,
+            merge_netsplit_block: None,
+            shanghai_time: None,
+            cancun_time: None,
+            prague_time: None,
+            terminal_total_difficulty: None,
+            terminal_total_difficulty_passed: false,
+            ethash: None,
+            clique: None,
+            parlia: None,
+            extra_fields: Default::default(),
+            deposit_contract_address: None,
+        }
+    }
 }
 
 /// Empty consensus configuration for proof-of-work networks.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EthashConfig {}
 
 /// Consensus configuration for Clique.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliqueConfig {
     /// Number of seconds between blocks to enforce.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -539,12 +571,34 @@ pub struct CliqueConfig {
     pub epoch: Option<u64>,
 }
 
+/// Consensus configuration for Parlia.
+/// Parlia is the consensus engine for BNB Smart Chain.
+/// For the general introduction: <https://docs.bnbchain.org/docs/learn/consensus/>
+/// For the specification: <https://github.com/bnb-chain/bsc/blob/master/params/config.go#L558>
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParliaConfig {
+    /// Number of seconds between blocks to enforce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period: Option<u64>,
+
+    /// Epoch length to update validator set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::vec;
     use alloy_primitives::hex;
     use core::str::FromStr;
+
+    #[test]
+    fn genesis_defaults_config() {
+        let s = r#"{}"#;
+        let genesis: Genesis = serde_json::from_str(s).unwrap();
+        assert_eq!(genesis.config.chain_id, 1);
+    }
 
     #[test]
     fn test_genesis() {
@@ -591,7 +645,7 @@ mod tests {
         let new_alloc_account = GenesisAccount {
             nonce: Some(1),
             balance: U256::from(1),
-            code: Some(Bytes::from(b"code")),
+            code: Some(b"code".into()),
             storage: Some(BTreeMap::default()),
             private_key: None,
         };
@@ -621,7 +675,7 @@ mod tests {
 
         let nonce = Some(1);
         let balance = U256::from(33);
-        let code = Some(Bytes::from(b"code"));
+        let code = Some(b"code".into());
         let root = hex!("9474ddfcea39c5a690d2744103e39d1ff1b03d18db10fc147d970ad24699395a").into();
         let value = hex!("58eb8294d9bb16832a9dabfcb270fff99ab8ee1d8764e4f3d9fdf59ec1dee469").into();
         let mut map = BTreeMap::default();
@@ -923,6 +977,160 @@ mod tests {
     "#;
 
         let _genesis: Genesis = serde_json::from_str(geth_genesis).unwrap();
+    }
+
+    #[test]
+    fn parse_deposit_contract_address() {
+        let genesis = r#"
+    {
+      "config": {
+        "chainId": 1337,
+        "homesteadBlock": 0,
+        "eip150Block": 0,
+        "eip150Hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "eip155Block": 0,
+        "eip158Block": 0,
+        "byzantiumBlock": 0,
+        "constantinopleBlock": 0,
+        "petersburgBlock": 0,
+        "istanbulBlock": 0,
+        "muirGlacierBlock": 0,
+        "berlinBlock": 0,
+        "londonBlock": 0,
+        "arrowGlacierBlock": 0,
+        "grayGlacierBlock": 0,
+        "shanghaiTime": 0,
+        "cancunTime": 0,
+        "pragueTime": 1,
+        "terminalTotalDifficulty": 0,
+        "depositContractAddress": "0x0000000000000000000000000000000000000000",
+        "terminalTotalDifficultyPassed": true
+      },
+      "nonce": "0x0",
+      "timestamp": "0x0",
+      "extraData": "0x",
+      "gasLimit": "0x4c4b40",
+      "difficulty": "0x1",
+      "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "coinbase": "0x0000000000000000000000000000000000000000"
+    }
+    "#;
+
+        let got_genesis: Genesis = serde_json::from_str(genesis).unwrap();
+        let expected_genesis = Genesis {
+            config: ChainConfig {
+                chain_id: 1337,
+                eip150_hash: Some(
+                    hex!("0000000000000000000000000000000000000000000000000000000000000000").into(),
+                ),
+                homestead_block: Some(0),
+                eip150_block: Some(0),
+                eip155_block: Some(0),
+                eip158_block: Some(0),
+                byzantium_block: Some(0),
+                constantinople_block: Some(0),
+                petersburg_block: Some(0),
+                istanbul_block: Some(0),
+                muir_glacier_block: Some(0),
+                berlin_block: Some(0),
+                london_block: Some(0),
+                arrow_glacier_block: Some(0),
+                gray_glacier_block: Some(0),
+                dao_fork_block: None,
+                dao_fork_support: false,
+                shanghai_time: Some(0),
+                cancun_time: Some(0),
+                prague_time: Some(1),
+                terminal_total_difficulty: Some(U256::ZERO),
+                terminal_total_difficulty_passed: true,
+                deposit_contract_address: Some(Address::ZERO),
+                ..Default::default()
+            },
+            nonce: 0,
+            timestamp: 0,
+            extra_data: Bytes::new(),
+            gas_limit: 0x4c4b40,
+            difficulty: U256::from(1),
+            ..Default::default()
+        };
+
+        assert_eq!(expected_genesis, got_genesis);
+    }
+
+    #[test]
+    fn parse_prague_time() {
+        let genesis = r#"
+    {
+      "config": {
+        "chainId": 1337,
+        "homesteadBlock": 0,
+        "eip150Block": 0,
+        "eip150Hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "eip155Block": 0,
+        "eip158Block": 0,
+        "byzantiumBlock": 0,
+        "constantinopleBlock": 0,
+        "petersburgBlock": 0,
+        "istanbulBlock": 0,
+        "muirGlacierBlock": 0,
+        "berlinBlock": 0,
+        "londonBlock": 0,
+        "arrowGlacierBlock": 0,
+        "grayGlacierBlock": 0,
+        "shanghaiTime": 0,
+        "cancunTime": 0,
+        "pragueTime": 1,
+        "terminalTotalDifficulty": 0,
+        "terminalTotalDifficultyPassed": true
+      },
+      "nonce": "0x0",
+      "timestamp": "0x0",
+      "extraData": "0x",
+      "gasLimit": "0x4c4b40",
+      "difficulty": "0x1",
+      "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "coinbase": "0x0000000000000000000000000000000000000000"
+    }
+    "#;
+
+        let got_genesis: Genesis = serde_json::from_str(genesis).unwrap();
+        let expected_genesis = Genesis {
+            config: ChainConfig {
+                chain_id: 1337,
+                eip150_hash: Some(
+                    hex!("0000000000000000000000000000000000000000000000000000000000000000").into(),
+                ),
+                homestead_block: Some(0),
+                eip150_block: Some(0),
+                eip155_block: Some(0),
+                eip158_block: Some(0),
+                byzantium_block: Some(0),
+                constantinople_block: Some(0),
+                petersburg_block: Some(0),
+                istanbul_block: Some(0),
+                muir_glacier_block: Some(0),
+                berlin_block: Some(0),
+                london_block: Some(0),
+                arrow_glacier_block: Some(0),
+                gray_glacier_block: Some(0),
+                dao_fork_block: None,
+                dao_fork_support: false,
+                shanghai_time: Some(0),
+                cancun_time: Some(0),
+                prague_time: Some(1),
+                terminal_total_difficulty: Some(U256::ZERO),
+                terminal_total_difficulty_passed: true,
+                ..Default::default()
+            },
+            nonce: 0,
+            timestamp: 0,
+            extra_data: Bytes::new(),
+            gas_limit: 0x4c4b40,
+            difficulty: U256::from(1),
+            ..Default::default()
+        };
+
+        assert_eq!(expected_genesis, got_genesis);
     }
 
     #[test]
@@ -1268,6 +1476,7 @@ mod tests {
                     constantinople_block: Some(0),
                     petersburg_block: Some(0),
                     istanbul_block: Some(0),
+                    deposit_contract_address: None,
                     ..Default::default()
                 },
             };
@@ -1305,5 +1514,32 @@ mod tests {
         let s = serde_json::to_string_pretty(&gen).unwrap();
         let gen2 = serde_json::from_str::<Genesis>(&s).unwrap();
         assert_eq!(gen, gen2);
+    }
+
+    #[test]
+    fn parse_extra_fields() {
+        let geth_genesis = r#"
+    {
+        "difficulty": "0x20000",
+        "gasLimit": "0x1",
+        "alloc": {},
+        "config": {
+          "ethash": {},
+          "chainId": 1,
+          "string_field": "string_value",
+          "numeric_field": 7,
+          "object_field": {
+            "sub_field": "sub_value"
+          }
+        }
+    }
+    "#;
+        let genesis: Genesis = serde_json::from_str(geth_genesis).unwrap();
+        let actual_string_value = genesis.config.extra_fields.get("string_field").unwrap();
+        assert_eq!(actual_string_value, "string_value");
+        let actual_numeric_value = genesis.config.extra_fields.get("numeric_field").unwrap();
+        assert_eq!(actual_numeric_value, 7);
+        let actual_object_value = genesis.config.extra_fields.get("object_field").unwrap();
+        assert_eq!(actual_object_value, &serde_json::json!({"sub_field": "sub_value"}));
     }
 }

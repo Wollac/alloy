@@ -2,21 +2,30 @@ use crate::{SignableTransaction, Signed, Transaction, TxType};
 use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{keccak256, Bytes, ChainId, Signature, TxKind, U256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header};
-use std::mem;
+use core::mem;
+
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 
 /// A transaction with a priority fee ([EIP-1559](https://eips.ethereum.org/EIPS/eip-1559)).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[doc(alias = "Eip1559Transaction", alias = "TransactionEip1559", alias = "Eip1559Tx")]
 pub struct TxEip1559 {
     /// EIP-155: Simple replay attack protection
-    pub chain_id: u64,
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub chain_id: ChainId,
     /// A scalar value equal to the number of transactions sent by the sender; formally Tn.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub nonce: u64,
     /// A scalar value equal to the maximum
     /// amount of gas that should be used in executing
     /// this transaction. This is paid up-front, before any
     /// computation is done and may not be increased
     /// later; formally Tg.
-    pub gas_limit: u64,
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub gas_limit: u128,
     /// A scalar value equal to the maximum
     /// amount of gas that should be used in executing
     /// this transaction. This is paid up-front, before any
@@ -28,6 +37,7 @@ pub struct TxEip1559 {
     /// 340282366920938463463374607431768211455
     ///
     /// This is also known as `GasFeeCap`
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub max_fee_per_gas: u128,
     /// Max Priority fee that transaction is paying
     ///
@@ -36,9 +46,11 @@ pub struct TxEip1559 {
     /// 340282366920938463463374607431768211455
     ///
     /// This is also known as `GasTipCap`
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub max_priority_fee_per_gas: u128,
     /// The 160-bit address of the message call’s recipient or, for a contract creation
     /// transaction, ∅, used here to denote the only member of B0 ; formally Tt.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "TxKind::is_create"))]
     pub to: TxKind,
     /// A scalar value equal to the number of Wei to
     /// be transferred to the message call’s recipient or,
@@ -106,8 +118,9 @@ impl TxEip1559 {
         })
     }
 
-    /// Encodes only the transaction's fields into the desired buffer, without a RLP header.
-    pub(crate) fn fields_len(&self) -> usize {
+    /// Outputs the length of the transaction's fields, without a RLP header.
+    #[doc(hidden)]
+    pub fn fields_len(&self) -> usize {
         let mut len = 0;
         len += self.chain_id.length();
         len += self.nonce.length();
@@ -164,8 +177,9 @@ impl TxEip1559 {
     }
 
     /// Inner encoding function that is used for both rlp [`Encodable`] trait and for calculating
-    /// hash that for eip2718 does not require a rlp header
-    pub(crate) fn encode_with_signature(
+    /// hash that for eip2718 does not require a rlp header.
+    #[doc(hidden)]
+    pub fn encode_with_signature(
         &self,
         signature: &Signature,
         out: &mut dyn BufMut,
@@ -189,7 +203,8 @@ impl TxEip1559 {
     /// header.
     ///
     /// This __does__ expect the bytes to start with a list header and include a signature.
-    pub(crate) fn decode_signed_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Signed<Self>> {
+    #[doc(hidden)]
+    pub fn decode_signed_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Signed<Self>> {
         let header = Header::decode(buf)?;
         if !header.list {
             return Err(alloy_rlp::Error::UnexpectedString);
@@ -225,6 +240,7 @@ impl TxEip1559 {
     }
 
     /// Get transaction type
+    #[doc(alias = "transaction_type")]
     pub(crate) const fn tx_type(&self) -> TxType {
         TxType::Eip1559
     }
@@ -245,8 +261,20 @@ impl TxEip1559 {
 }
 
 impl Transaction for TxEip1559 {
-    fn input(&self) -> &[u8] {
-        &self.input
+    fn chain_id(&self) -> Option<ChainId> {
+        Some(self.chain_id)
+    }
+
+    fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    fn gas_limit(&self) -> u128 {
+        self.gas_limit
+    }
+
+    fn gas_price(&self) -> Option<u128> {
+        None
     }
 
     fn to(&self) -> TxKind {
@@ -257,20 +285,8 @@ impl Transaction for TxEip1559 {
         self.value
     }
 
-    fn chain_id(&self) -> Option<ChainId> {
-        Some(self.chain_id)
-    }
-
-    fn nonce(&self) -> u64 {
-        self.nonce
-    }
-
-    fn gas_limit(&self) -> u64 {
-        self.gas_limit
-    }
-
-    fn gas_price(&self) -> Option<U256> {
-        None
+    fn input(&self) -> &[u8] {
+        &self.input
     }
 }
 
@@ -330,7 +346,7 @@ mod tests {
     use super::TxEip1559;
     use crate::SignableTransaction;
     use alloy_eips::eip2930::AccessList;
-    use alloy_primitives::{address, b256, hex, Address, Signature, TxKind, B256, U256};
+    use alloy_primitives::{address, b256, hex, Address, Signature, B256, U256};
 
     #[test]
     fn recover_signer_eip1559() {
@@ -341,7 +357,7 @@ mod tests {
             chain_id: 1,
             nonce: 0x42,
             gas_limit: 44386,
-            to: TxKind::Call( address!("6069a6c32cf691f5982febae4faf8a6f3ab2f0f6")),
+            to: address!("6069a6c32cf691f5982febae4faf8a6f3ab2f0f6").into(),
             value: U256::from(0_u64),
             input:  hex!("a22cb4650000000000000000000000005eee75727d804a2b13038928d36f8b188945a57a0000000000000000000000000000000000000000000000000000000000000000").into(),
             max_fee_per_gas: 0x4a817c800,
@@ -374,7 +390,7 @@ mod tests {
             chain_id: 1,
             nonce: 0x42,
             gas_limit: 44386,
-            to: TxKind::Call( address!("6069a6c32cf691f5982febae4faf8a6f3ab2f0f6")),
+            to: address!("6069a6c32cf691f5982febae4faf8a6f3ab2f0f6").into(),
             value: U256::from(0_u64),
             input:  hex!("a22cb4650000000000000000000000005eee75727d804a2b13038928d36f8b188945a57a0000000000000000000000000000000000000000000000000000000000000000").into(),
             max_fee_per_gas: 0x4a817c800,

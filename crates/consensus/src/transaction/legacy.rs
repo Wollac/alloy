@@ -1,14 +1,29 @@
 use crate::{SignableTransaction, Signed, Transaction};
 use alloy_primitives::{keccak256, Bytes, ChainId, Signature, TxKind, U256};
 use alloy_rlp::{length_of_length, BufMut, Decodable, Encodable, Header, Result};
-use std::mem;
+use core::mem;
+
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 
 /// Legacy transaction.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[doc(alias = "LegacyTransaction", alias = "TransactionLegacy", alias = "LegacyTx")]
 pub struct TxLegacy {
     /// Added as EIP-155: Simple replay attack protection
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default,
+            with = "alloy_serde::quantity::opt",
+            skip_serializing_if = "Option::is_none",
+        )
+    )]
     pub chain_id: Option<ChainId>,
     /// A scalar value equal to the number of transactions sent by the sender; formally Tn.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub nonce: u64,
     /// A scalar value equal to the number of
     /// Wei to be paid per unit of gas for all computation
@@ -17,15 +32,18 @@ pub struct TxLegacy {
     /// As ethereum circulation is around 120mil eth as of 2022 that is around
     /// 120000000000000000000000000 wei we are safe to use u128 as its max number is:
     /// 340282366920938463463374607431768211455
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub gas_price: u128,
     /// A scalar value equal to the maximum
     /// amount of gas that should be used in executing
     /// this transaction. This is paid up-front, before any
     /// computation is done and may not be increased
     /// later; formally Tg.
-    pub gas_limit: u64,
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub gas_limit: u128,
     /// The 160-bit address of the message call’s recipient or, for a contract creation
     /// transaction, ∅, used here to denote the only member of B0 ; formally Tt.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "TxKind::is_create"))]
     pub to: TxKind,
     /// A scalar value equal to the number of Wei to
     /// be transferred to the message call’s recipient or,
@@ -58,7 +76,8 @@ impl TxLegacy {
 
     /// Outputs the length of the transaction's fields, without a RLP header or length of the
     /// eip155 fields.
-    pub(crate) fn fields_len(&self) -> usize {
+    #[doc(hidden)]
+    pub fn fields_len(&self) -> usize {
         let mut len = 0;
         len += self.nonce.length();
         len += self.gas_price.length();
@@ -119,15 +138,14 @@ impl TxLegacy {
     /// Outputs the length of EIP-155 fields. Only outputs a non-zero value for EIP-155 legacy
     /// transactions.
     pub(crate) fn eip155_fields_len(&self) -> usize {
-        if let Some(id) = self.chain_id {
+        self.chain_id.map_or(
+            // this is either a pre-EIP-155 legacy transaction or a typed transaction
+            0,
             // EIP-155 encodes the chain ID and two zeroes, so we add 2 to the length of the chain
             // ID to get the length of all 3 fields
             // len(chain_id) + (0x00) + (0x00)
-            id.length() + 2
-        } else {
-            // this is either a pre-EIP-155 legacy transaction or a typed transaction
-            0
-        }
+            |id| id.length() + 2,
+        )
     }
 
     /// Decodes the transaction from RLP bytes, including the signature.
@@ -136,7 +154,8 @@ impl TxLegacy {
     /// header.
     ///
     /// This __does__ expect the bytes to start with a list header and include a signature.
-    pub(crate) fn decode_signed_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Signed<Self>> {
+    #[doc(hidden)]
+    pub fn decode_signed_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Signed<Self>> {
         let header = Header::decode(buf)?;
         if !header.list {
             return Err(alloy_rlp::Error::UnexpectedString);
@@ -166,7 +185,7 @@ impl TxLegacy {
     /// Decode the RLP fields of the transaction, without decoding an RLP
     /// header.
     pub(crate) fn decode_fields(data: &mut &[u8]) -> Result<Self> {
-        Ok(TxLegacy {
+        Ok(Self {
             nonce: Decodable::decode(data)?,
             gas_price: Decodable::decode(data)?,
             gas_limit: Decodable::decode(data)?,
@@ -179,8 +198,20 @@ impl TxLegacy {
 }
 
 impl Transaction for TxLegacy {
-    fn input(&self) -> &[u8] {
-        &self.input
+    fn chain_id(&self) -> Option<ChainId> {
+        self.chain_id
+    }
+
+    fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    fn gas_limit(&self) -> u128 {
+        self.gas_limit
+    }
+
+    fn gas_price(&self) -> Option<u128> {
+        Some(self.gas_price)
     }
 
     fn to(&self) -> TxKind {
@@ -191,24 +222,16 @@ impl Transaction for TxLegacy {
         self.value
     }
 
-    fn chain_id(&self) -> Option<ChainId> {
-        self.chain_id
-    }
-
-    fn nonce(&self) -> u64 {
-        self.nonce
-    }
-
-    fn gas_limit(&self) -> u64 {
-        self.gas_limit
-    }
-
-    fn gas_price(&self) -> Option<U256> {
-        Some(U256::from(self.gas_price))
+    fn input(&self) -> &[u8] {
+        &self.input
     }
 }
 
 impl SignableTransaction<Signature> for TxLegacy {
+    fn use_eip155(&self) -> bool {
+        self.chain_id.is_some()
+    }
+
     fn set_chain_id(&mut self, chain_id: ChainId) {
         self.chain_id = Some(chain_id);
     }
@@ -291,7 +314,7 @@ mod tests {
             nonce: 0x18,
             gas_price: 0xfa56ea00,
             gas_limit: 119902,
-            to: TxKind::Call( hex!("06012c8cf97bead5deae237070f9587f8e7a266d").into()),
+            to: TxKind::Call(hex!("06012c8cf97bead5deae237070f9587f8e7a266d").into()),
             value: U256::from(0x1c6bf526340000u64),
             input:  hex!("f7d8c88300000000000000000000000000000000000000000000000000000000000cee6100000000000000000000000000000000000000000000000000000000000ac3e1").into(),
         };

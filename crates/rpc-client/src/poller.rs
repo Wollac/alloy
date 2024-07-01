@@ -86,7 +86,7 @@ where
         params: Params,
     ) -> Self {
         let poll_interval =
-            client.upgrade().map_or_else(|| Duration::from_secs(7), |c| c.default_poll_interval());
+            client.upgrade().map_or_else(|| Duration::from_secs(7), |c| c.poll_interval());
         Self {
             client,
             method: method.into(),
@@ -276,8 +276,8 @@ impl<P: Serialize> ParamsOnce<P> {
     #[inline]
     fn get(&mut self) -> serde_json::Result<&RawValue> {
         match self {
-            ParamsOnce::Typed(_) => self.init(),
-            ParamsOnce::Serialized(p) => Ok(p),
+            Self::Typed(_) => self.init(),
+            Self::Serialized(p) => Ok(p),
         }
     }
 
@@ -285,7 +285,7 @@ impl<P: Serialize> ParamsOnce<P> {
     fn init(&mut self) -> serde_json::Result<&RawValue> {
         let Self::Typed(p) = self else { unreachable!() };
         let v = serde_json::value::to_raw_value(p)?;
-        *self = ParamsOnce::Serialized(v);
+        *self = Self::Serialized(v);
         let Self::Serialized(v) = self else { unreachable!() };
         Ok(v)
     }

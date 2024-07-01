@@ -12,13 +12,15 @@ use coins_ledger::{
 use futures_util::lock::Mutex;
 
 #[cfg(feature = "eip712")]
+use alloy_dyn_abi::TypedData;
+#[cfg(feature = "eip712")]
 use alloy_sol_types::{Eip712Domain, SolStruct};
 
 /// A Ledger Ethereum signer.
 ///
 /// This is a simple wrapper around the [Ledger transport](Ledger).
 ///
-/// Note that this signer only supports asynchronous operations. Calling a non-asynchronous method
+/// Note that this wallet only supports asynchronous operations. Calling a non-asynchronous method
 /// will always return an error.
 #[derive(Debug)]
 pub struct LedgerSigner {
@@ -31,7 +33,12 @@ pub struct LedgerSigner {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl alloy_network::TxSigner<Signature> for LedgerSigner {
+    fn address(&self) -> Address {
+        self.address
+    }
+
     #[inline]
+    #[doc(alias = "sign_tx")]
     async fn sign_transaction(
         &self,
         tx: &mut dyn SignableTransaction<Signature>,
@@ -67,7 +74,17 @@ impl Signer for LedgerSigner {
         payload: &T,
         domain: &Eip712Domain,
     ) -> Result<Signature> {
-        self.sign_typed_data_(payload, domain).await.map_err(alloy_signer::Error::other)
+        self.sign_typed_data_(&payload.eip712_hash_struct(), domain)
+            .await
+            .map_err(alloy_signer::Error::other)
+    }
+
+    #[cfg(feature = "eip712")]
+    #[inline]
+    async fn sign_dynamic_typed_data(&self, payload: &TypedData) -> Result<Signature> {
+        self.sign_typed_data_(&payload.hash_struct()?, &payload.domain)
+            .await
+            .map_err(alloy_signer::Error::other)
     }
 
     #[inline]
@@ -93,9 +110,9 @@ impl LedgerSigner {
     ///
     /// ```
     /// # async fn foo() -> Result<(), Box<dyn std::error::Error>> {
-    /// use alloy_signer_ledger::{HDPath, Ledger};
+    /// use alloy_signer_ledger::{HDPath, LedgerSigner};
     ///
-    /// let ledger = Ledger::new(HDPath::LedgerLive(0), Some(1)).await?;
+    /// let ledger = LedgerSigner::new(HDPath::LedgerLive(0), Some(1)).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -149,7 +166,7 @@ impl LedgerSigner {
             let address_str = &result[offset + 1..offset + 1 + result[offset] as usize];
             let mut address = [0; 20];
             address.copy_from_slice(&hex::decode(address_str)?);
-            Address::from(address)
+            address.into()
         };
         debug!(?address, "Received address from device");
         Ok(address)
@@ -181,6 +198,7 @@ impl LedgerSigner {
     /// Signs an Ethereum transaction's RLP bytes (requires confirmation on the ledger).
     ///
     /// Note that this does not apply EIP-155.
+    #[doc(alias = "sign_transaction_rlp")]
     pub async fn sign_tx_rlp(&self, tx_rlp: &[u8]) -> Result<Signature, LedgerError> {
         let mut payload = Self::path_to_bytes(&self.derivation);
         payload.extend_from_slice(tx_rlp);
@@ -188,9 +206,9 @@ impl LedgerSigner {
     }
 
     #[cfg(feature = "eip712")]
-    async fn sign_typed_data_<T: SolStruct>(
+    async fn sign_typed_data_(
         &self,
-        payload: &T,
+        hash_struct: &B256,
         domain: &Eip712Domain,
     ) -> Result<Signature, LedgerError> {
         // See comment for v1.6.0 requirement
@@ -206,7 +224,7 @@ impl LedgerSigner {
 
         let mut data = Self::path_to_bytes(&self.derivation);
         data.extend_from_slice(domain.separator().as_slice());
-        data.extend_from_slice(payload.eip712_hash_struct().as_slice());
+        data.extend_from_slice(hash_struct.as_slice());
 
         self.sign_payload(INS::SIGN_ETH_EIP_712, &data).await
     }
@@ -285,6 +303,7 @@ mod tests {
     use alloy_network::TxSigner;
     use alloy_primitives::{address, bytes, U256};
     use alloy_rlp::Decodable;
+    use serial_test::serial;
     use std::sync::OnceLock;
 
     const DTYPE: DerivationType = DerivationType::LedgerLive(0);
@@ -306,7 +325,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial]
+    #[serial]
     #[ignore]
     async fn test_get_address() {
         let ledger = init_ledger().await;
@@ -315,7 +334,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial]
+    #[serial]
     #[ignore]
     async fn test_version() {
         let ledger = init_ledger().await;
@@ -325,7 +344,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial]
+    #[serial]
     #[ignore]
     async fn test_sign_tx_legacy() {
         // https://github.com/gakonst/ethers-rs/blob/90b87bd85be98caa8bb592b67f3f9acbc8a409cf/ethers-signers/src/ledger/app.rs#L321
@@ -333,9 +352,7 @@ mod tests {
             nonce: 5,
             gas_price: 400e9 as u128,
             gas_limit: 1000000,
-            to: alloy_primitives::TxKind::Call(address!(
-                "2ed7afa17473e17ac59908f088b4371d28585476"
-            )),
+            to: address!("2ed7afa17473e17ac59908f088b4371d28585476").into(),
             // TODO: this fails for some reason with 6a80 APDU_CODE_BAD_KEY_HANDLE
             // approve uni v2 router 0xff
             // input: bytes!("095ea7b30000000000000000000000007a250d5630b4cf539739df2c5dacb4c659f2488dffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
@@ -350,7 +367,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial]
+    #[serial]
     #[ignore]
     async fn test_sign_tx_eip2930() {
         // From the Ledger Ethereum app example: https://github.com/LedgerHQ/app-ethereum/blob/2264f677568cbc1e3177f9eccb3c14a229ab3255/examples/signTx.py#L104-L106
@@ -366,7 +383,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial]
+    #[serial]
     #[ignore]
     async fn test_sign_tx_eip1559() {
         // From the Ledger Ethereum app example: https://github.com/LedgerHQ/app-ethereum/blob/2264f677568cbc1e3177f9eccb3c14a229ab3255/examples/signTx.py#L100-L102
@@ -388,7 +405,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial]
+    #[serial]
     #[ignore]
     async fn test_sign_message() {
         let ledger = init_ledger().await;

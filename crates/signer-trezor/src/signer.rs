@@ -14,7 +14,7 @@ const FIRMWARE_2_MIN_VERSION: &str = ">=2.5.1";
 ///
 /// This is a simple wrapper around the [Trezor transport](Trezor).
 ///
-/// Note that this signer only supports asynchronous operations. Calling a non-asynchronous method
+/// Note that this wallet only supports asynchronous operations. Calling a non-asynchronous method
 /// will always return an error.
 pub struct TrezorSigner {
     derivation: DerivationType,
@@ -67,7 +67,12 @@ impl Signer for TrezorSigner {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl alloy_network::TxSigner<Signature> for TrezorSigner {
+    fn address(&self) -> Address {
+        self.address
+    }
+
     #[inline]
+    #[doc(alias = "sign_tx")]
     async fn sign_transaction(
         &self,
         tx: &mut dyn SignableTransaction<Signature>,
@@ -89,7 +94,7 @@ impl TrezorSigner {
             address: Address::ZERO,
             session_id: vec![],
         };
-        signer.initate_session()?;
+        signer.initiate_session()?;
         signer.address = signer.get_address_with_path(&derivation).await?;
         Ok(signer)
     }
@@ -112,7 +117,7 @@ impl TrezorSigner {
         Ok(())
     }
 
-    fn initate_session(&mut self) -> Result<(), TrezorError> {
+    fn initiate_session(&mut self) -> Result<(), TrezorError> {
         let mut client = trezor_client::unique(false)?;
         client.init_device(None)?;
 
@@ -154,6 +159,7 @@ impl TrezorSigner {
     /// Signs an Ethereum transaction (requires confirmation on the Trezor).
     ///
     /// Does not apply EIP-155.
+    #[doc(alias = "sign_transaction_inner")]
     async fn sign_tx_inner(
         &self,
         tx: &dyn SignableTransaction<Signature>,
@@ -164,11 +170,11 @@ impl TrezorSigner {
         let nonce = tx.nonce();
         let nonce = u64_to_trezor(nonce);
 
-        let gas_price = U256::ZERO;
-        let gas_price = u256_to_trezor(gas_price);
+        let gas_price = tx.gas_price().unwrap_or(0);
+        let gas_price = u128_to_trezor(gas_price);
 
         let gas_limit = tx.gas_limit();
-        let gas_limit = u64_to_trezor(gas_limit);
+        let gas_limit = u128_to_trezor(gas_limit);
 
         let to = match tx.to() {
             TxKind::Call(to) => address_to_trezor(&to),
@@ -181,7 +187,7 @@ impl TrezorSigner {
         let data = tx.input().to_vec();
         let chain_id = tx.chain_id();
 
-        // TODO: Uncomment in 1.76
+        // TODO: Uncomment once dyn trait upcasting is stable
         /*
         let signature = if let Some(tx) = (tx as &dyn std::any::Any).downcast_ref::<TxEip1559>() {
         */
@@ -276,7 +282,9 @@ fn signature_from_trezor(x: trezor_client::client::Signature) -> Result<Signatur
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
+    use alloy_network::{EthereumWallet, TransactionBuilder};
+    use alloy_primitives::{address, b256};
+    use alloy_rpc_types_eth::{AccessList, AccessListItem, TransactionRequest};
 
     #[tokio::test]
     #[ignore]
@@ -306,124 +314,106 @@ mod tests {
 
     #[tokio::test]
     #[ignore]
-    #[cfg(TODO)] // TODO: TypedTransaction
     async fn test_sign_tx() {
-        let trezor = TrezorSigner::new(DerivationType::TrezorLive(0), 1).await.unwrap();
+        let trezor = TrezorSigner::new(DerivationType::TrezorLive(0), Some(1)).await.unwrap();
 
         // approve uni v2 router 0xff
         let data = hex::decode("095ea7b30000000000000000000000007a250d5630b4cf539739df2c5dacb4c659f2488dffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap();
-
-        let tx_req = TransactionRequest::new()
-            .to("2ed7afa17473e17ac59908f088b4371d28585476".parse::<Address>().unwrap())
-            .gas(1000000)
-            .gas_price(400e9 as u64)
-            .nonce(5)
-            .data(data)
-            .value(ethers_core::utils::parse_ether(100).unwrap())
-            .into();
-        let tx = trezor.sign_transaction(&tx_req).await.unwrap();
+        let _tx = TransactionRequest::default()
+            .to(address!("2ed7afa17473e17ac59908f088b4371d28585476"))
+            .with_gas_limit(1000000)
+            .with_gas_price(400e9 as u128)
+            .with_nonce(5)
+            .with_input(data)
+            .with_value(U256::from(100e18 as u128))
+            .build(&EthereumWallet::new(trezor))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     #[ignore]
-    #[cfg(TODO)] // TODO: TypedTransaction
     async fn test_sign_big_data_tx() {
-        let trezor = TrezorSigner::new(DerivationType::TrezorLive(0), 1).await.unwrap();
+        let trezor = TrezorSigner::new(DerivationType::TrezorLive(0), Some(1)).await.unwrap();
 
         // invalid data
         let big_data = hex::decode("095ea7b30000000000000000000000007a250d5630b4cf539739df2c5dacb4c659f2488dffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string()+ &"ff".repeat(1032*2) + "aa").unwrap();
-        let tx_req = TransactionRequest::new()
-            .to("2ed7afa17473e17ac59908f088b4371d28585476".parse::<Address>().unwrap())
-            .gas(1000000)
-            .gas_price(400e9 as u64)
-            .nonce(5)
-            .data(big_data)
-            .value(ethers_core::utils::parse_ether(100).unwrap())
-            .into();
-        let tx = trezor.sign_transaction(&tx_req).await.unwrap();
+        let _tx = TransactionRequest::default()
+            .to(address!("2ed7afa17473e17ac59908f088b4371d28585476"))
+            .with_gas_limit(1000000)
+            .with_gas_price(400e9 as u128)
+            .with_nonce(5)
+            .with_input(big_data)
+            .with_value(U256::from(100e18 as u128))
+            .build(&EthereumWallet::new(trezor))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     #[ignore]
-    #[cfg(TODO)] // TODO: TypedTransaction
     async fn test_sign_empty_txes() {
-        // Contract creation (empty `to`), requires data.
-        // To test without the data field, we need to specify a `to` address.
-        let trezor = TrezorSigner::new(DerivationType::TrezorLive(0), 1, None).await.unwrap();
-        {
-            let tx_req = Eip1559TransactionRequest::new()
-                .to("2ed7afa17473e17ac59908f088b4371d28585476".parse::<Address>().unwrap())
-                .into();
-            let tx = trezor.sign_transaction(&tx_req).await.unwrap();
-        }
-        {
-            let tx_req = TransactionRequest::new()
-                .to("2ed7afa17473e17ac59908f088b4371d28585476".parse::<Address>().unwrap())
-                .into();
-            let tx = trezor.sign_transaction(&tx_req).await.unwrap();
-        }
+        let trezor = TrezorSigner::new(DerivationType::TrezorLive(0), Some(1)).await.unwrap();
+        TransactionRequest::default()
+            .to(address!("2ed7afa17473e17ac59908f088b4371d28585476"))
+            .with_gas_price(1)
+            .build(&EthereumWallet::new(trezor))
+            .await
+            .unwrap();
 
         let data = hex::decode("095ea7b30000000000000000000000007a250d5630b4cf539739df2c5dacb4c659f2488dffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap();
 
         // Contract creation (empty `to`, with data) should show on the trezor device as:
         //  ` "0 Wei ETH
         //  ` new contract?"
-        let trezor = TrezorSigner::new(DerivationType::TrezorLive(0), 1).await.unwrap();
+        let trezor = TrezorSigner::new(DerivationType::TrezorLive(0), Some(1)).await.unwrap();
         {
-            let tx_req = Eip1559TransactionRequest::new().data(data.clone()).into();
-            let tx = trezor.sign_transaction(&tx_req).await.unwrap();
-        }
-        {
-            let tx_req = TransactionRequest::new().data(data.clone()).into();
-            let tx = trezor.sign_transaction(&tx_req).await.unwrap();
+            let _tx = TransactionRequest::default()
+                .into_create()
+                .with_input(data)
+                .with_gas_price(1)
+                .build(&EthereumWallet::new(trezor))
+                .await
+                .unwrap();
         }
     }
 
     #[tokio::test]
     #[ignore]
-    #[cfg(TODO)] // TODO: TypedTransaction
     async fn test_sign_eip1559_tx() {
-        let trezor = TrezorSigner::new(DerivationType::TrezorLive(0), 1).await.unwrap();
+        let trezor = TrezorSigner::new(DerivationType::TrezorLive(0), Some(1)).await.unwrap();
 
         // approve uni v2 router 0xff
         let data = hex::decode("095ea7b30000000000000000000000007a250d5630b4cf539739df2c5dacb4c659f2488dffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap();
 
         let lst = AccessList(vec![
             AccessListItem {
-                address: "0x8ba1f109551bd432803012645ac136ddd64dba72".parse().unwrap(),
+                address: address!("8ba1f109551bd432803012645ac136ddd64dba72"),
                 storage_keys: vec![
-                    "0x0000000000000000000000000000000000000000000000000000000000000000"
-                        .parse()
-                        .unwrap(),
-                    "0x0000000000000000000000000000000000000000000000000000000000000042"
-                        .parse()
-                        .unwrap(),
+                    b256!("0000000000000000000000000000000000000000000000000000000000000000"),
+                    b256!("0000000000000000000000000000000000000000000000000000000000000042"),
                 ],
             },
             AccessListItem {
-                address: "0x2ed7afa17473e17ac59908f088b4371d28585476".parse().unwrap(),
+                address: address!("2ed7afa17473e17ac59908f088b4371d28585476"),
                 storage_keys: vec![
-                    "0x0000000000000000000000000000000000000000000000000000000000000000"
-                        .parse()
-                        .unwrap(),
-                    "0x0000000000000000000000000000000000000000000000000000000000000042"
-                        .parse()
-                        .unwrap(),
+                    b256!("0000000000000000000000000000000000000000000000000000000000000000"),
+                    b256!("0000000000000000000000000000000000000000000000000000000000000042"),
                 ],
             },
         ]);
 
-        let tx_req = Eip1559TransactionRequest::new()
-            .to("2ed7afa17473e17ac59908f088b4371d28585476".parse::<Address>().unwrap())
-            .gas(1000000)
-            .max_fee_per_gas(400e9 as u64)
-            .max_priority_fee_per_gas(400e9 as u64)
-            .nonce(5)
-            .data(data)
-            .access_list(lst)
-            .value(ethers_core::utils::parse_ether(100).unwrap())
-            .into();
-
-        let tx = trezor.sign_transaction(&tx_req).await.unwrap();
+        let _tx = TransactionRequest::default()
+            .to(address!("2ed7afa17473e17ac59908f088b4371d28585476"))
+            .with_gas_limit(1000000)
+            .max_fee_per_gas(400e9 as u128)
+            .max_priority_fee_per_gas(400e9 as u128)
+            .with_nonce(5)
+            .with_input(data)
+            .with_access_list(lst)
+            .with_value(U256::from(100e18 as u128))
+            .build(&EthereumWallet::new(trezor))
+            .await
+            .unwrap();
     }
 }

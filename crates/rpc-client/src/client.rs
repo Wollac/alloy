@@ -1,6 +1,6 @@
 use crate::{poller::PollerBuilder, BatchRequest, ClientBuilder, RpcCall};
 use alloy_json_rpc::{Id, Request, RpcParam, RpcReturn};
-use alloy_transport::{BoxTransport, Transport, TransportConnect, TransportError};
+use alloy_transport::{BoxTransport, Transport};
 use alloy_transport_http::Http;
 use std::{
     borrow::Cow,
@@ -20,6 +20,11 @@ pub type WeakClient<T> = Weak<RpcClientInner<T>>;
 pub type ClientRef<'a, T> = &'a RpcClientInner<T>;
 
 /// A JSON-RPC client.
+///
+/// [`RpcClient`] should never be instantiated directly. Instead, use
+/// [`ClientBuilder`].
+///
+/// [`ClientBuilder`]: crate::ClientBuilder
 #[derive(Debug)]
 pub struct RpcClient<T>(Arc<RpcClientInner<T>>);
 
@@ -76,17 +81,18 @@ impl<T> RpcClient<T> {
     pub fn get_ref(&self) -> ClientRef<'_, T> {
         &self.0
     }
+
+    /// Sets the poll interval for the client in milliseconds.
+    ///
+    /// Note: This will only set the poll interval for the client if it is the only reference to the
+    /// inner client. If the reference is held by many, then it will not update the poll interval.
+    pub fn with_poll_interval(self, poll_interval: Duration) -> Self {
+        self.inner().set_poll_interval(poll_interval);
+        self
+    }
 }
 
 impl<T: Transport> RpcClient<T> {
-    /// Connect to a transport via a [`TransportConnect`] implementor.
-    pub async fn connect<C>(connect: C) -> Result<Self, TransportError>
-    where
-        C: TransportConnect<Transport = T>,
-    {
-        ClientBuilder::default().connect(connect).await
-    }
-
     /// Build a poller that polls a method with the given parameters.
     ///
     /// See [`PollerBuilder`] for examples and more details.
@@ -112,8 +118,8 @@ impl<T: Transport + Clone> RpcClient<T> {
     pub fn boxed(self) -> RpcClient<BoxTransport> {
         let inner = match Arc::try_unwrap(self.0) {
             Ok(inner) => inner,
-            // TODO: `id` is discarded.
-            Err(inner) => RpcClientInner::new(inner.transport.clone(), inner.is_local),
+            Err(inner) => RpcClientInner::new(inner.transport.clone(), inner.is_local)
+                .with_id(inner.id.load(Ordering::Relaxed)),
         };
         RpcClient::from_inner(inner.boxed())
     }
@@ -155,22 +161,40 @@ pub struct RpcClientInner<T> {
     pub(crate) is_local: bool,
     /// The next request ID to use.
     pub(crate) id: AtomicU64,
+    /// The poll interval for the client in milliseconds.
+    pub(crate) poll_interval: AtomicU64,
 }
 
 impl<T> RpcClientInner<T> {
     /// Create a new [`RpcClient`] with the given transport.
+    ///
+    /// Note: Sets the poll interval to 250ms for local transports and 7s for remote transports by
+    /// default.
     #[inline]
     pub const fn new(t: T, is_local: bool) -> Self {
-        Self { transport: t, is_local, id: AtomicU64::new(0) }
+        Self {
+            transport: t,
+            is_local,
+            id: AtomicU64::new(0),
+            poll_interval: if is_local { AtomicU64::new(250) } else { AtomicU64::new(7000) },
+        }
     }
 
-    /// Returns the default poll interval for the client.
-    pub const fn default_poll_interval(&self) -> Duration {
-        if self.is_local {
-            Duration::from_millis(250)
-        } else {
-            Duration::from_secs(7)
-        }
+    /// Sets the starting ID for the client.
+    #[inline]
+    pub fn with_id(self, id: u64) -> Self {
+        Self { id: AtomicU64::new(id), ..self }
+    }
+
+    /// Returns the default poll interval (milliseconds) for the client.
+    pub fn poll_interval(&self) -> Duration {
+        Duration::from_millis(self.poll_interval.load(Ordering::Relaxed))
+    }
+
+    /// Set the poll interval for the client in milliseconds. Default:
+    /// 7s for remote and 250ms for local transports.
+    pub fn set_poll_interval(&self, poll_interval: Duration) {
+        self.poll_interval.store(poll_interval.as_millis() as u64, Ordering::Relaxed);
     }
 
     /// Returns a reference to the underlying transport.
@@ -265,7 +289,12 @@ impl<T: Transport + Clone> RpcClientInner<T> {
     /// erasing each type. E.g. if you have `RpcClient<Http>` and
     /// `RpcClient<Ws>` you can put both into a `Vec<RpcClient<BoxTransport>>`.
     pub fn boxed(self) -> RpcClientInner<BoxTransport> {
-        RpcClientInner { transport: self.transport.boxed(), is_local: self.is_local, id: self.id }
+        RpcClientInner {
+            transport: self.transport.boxed(),
+            is_local: self.is_local,
+            id: self.id,
+            poll_interval: self.poll_interval,
+        }
     }
 }
 
@@ -292,7 +321,7 @@ mod pubsub_impl {
 
     impl RpcClient<PubSubFrontend> {
         /// Connect to a transport via a [`PubSubConnect`] implementor.
-        pub async fn connect_pubsub<C>(connect: C) -> TransportResult<RpcClient<PubSubFrontend>>
+        pub async fn connect_pubsub<C>(connect: C) -> TransportResult<Self>
         where
             C: PubSubConnect,
         {
@@ -308,5 +337,23 @@ mod pubsub_impl {
         pub fn channel_size(&self) -> usize {
             self.transport.channel_size()
         }
+
+        /// Set the channel size.
+        pub fn set_channel_size(&self, size: usize) {
+            self.transport.set_channel_size(size)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_client_with_poll_interval() {
+        let poll_interval = Duration::from_millis(5_000);
+        let client = RpcClient::new_http(reqwest::Url::parse("http://localhost").unwrap())
+            .with_poll_interval(poll_interval);
+        assert_eq!(client.poll_interval(), poll_interval);
     }
 }

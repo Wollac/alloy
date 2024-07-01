@@ -22,15 +22,15 @@ pub enum DerivationType {
 impl fmt::Display for DerivationType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match self {
-            DerivationType::Legacy(index) => write!(f, "m/44'/60'/0'/{index}"),
-            DerivationType::LedgerLive(index) => write!(f, "m/44'/60'/{index}'/0/0"),
-            DerivationType::Other(inner) => f.write_str(inner),
+            Self::Legacy(index) => write!(f, "m/44'/60'/0'/{index}"),
+            Self::LedgerLive(index) => write!(f, "m/44'/60'/{index}'/0/0"),
+            Self::Other(inner) => f.write_str(inner),
         }
     }
 }
 
 /// Error when using the Ledger transport.
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum LedgerError {
     /// Underlying Ledger transport error.
     #[error(transparent)]
@@ -63,7 +63,7 @@ pub enum LedgerError {
 pub(crate) const P1_FIRST: u8 = 0x00;
 
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(non_camel_case_types, dead_code)]
 pub(crate) enum INS {
     GET_PUBLIC_KEY = 0x02,
@@ -76,17 +76,17 @@ pub(crate) enum INS {
 impl fmt::Display for INS {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            INS::GET_PUBLIC_KEY => write!(f, "GET_PUBLIC_KEY"),
-            INS::SIGN => write!(f, "SIGN"),
-            INS::GET_APP_CONFIGURATION => write!(f, "GET_APP_CONFIGURATION"),
-            INS::SIGN_PERSONAL_MESSAGE => write!(f, "SIGN_PERSONAL_MESSAGE"),
-            INS::SIGN_ETH_EIP_712 => write!(f, "SIGN_ETH_EIP_712"),
+            Self::GET_PUBLIC_KEY => write!(f, "GET_PUBLIC_KEY"),
+            Self::SIGN => write!(f, "SIGN"),
+            Self::GET_APP_CONFIGURATION => write!(f, "GET_APP_CONFIGURATION"),
+            Self::SIGN_PERSONAL_MESSAGE => write!(f, "SIGN_PERSONAL_MESSAGE"),
+            Self::SIGN_ETH_EIP_712 => write!(f, "SIGN_ETH_EIP_712"),
         }
     }
 }
 
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub(crate) enum P1 {
     NON_CONFIRM = 0x00,
@@ -94,7 +94,7 @@ pub(crate) enum P1 {
 }
 
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub(crate) enum P2 {
     NO_CHAINCODE = 0x00,

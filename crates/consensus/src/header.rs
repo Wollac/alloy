@@ -7,7 +7,10 @@ use alloy_primitives::{b256, keccak256, Address, BlockNumber, Bloom, Bytes, B256
 use alloy_rlp::{
     length_of_length, Buf, BufMut, Decodable, Encodable, EMPTY_LIST_CODE, EMPTY_STRING_CODE,
 };
-use std::mem;
+use core::mem;
+
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 
 /// Ommer root of empty list.
 pub const EMPTY_OMMER_ROOT_HASH: B256 =
@@ -18,7 +21,9 @@ pub const EMPTY_ROOT_HASH: B256 =
     b256!("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
 
 /// Ethereum Block header
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Header {
     /// The Keccak 256-bit hash of the parent
     /// block’s header, in its entirety; formally Hp.
@@ -39,6 +44,7 @@ pub struct Header {
     pub receipts_root: B256,
     /// The Keccak 256-bit hash of the withdrawals list portion of this block.
     /// <https://eips.ethereum.org/EIPS/eip-4895>
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
     pub withdrawals_root: Option<B256>,
     /// The Bloom filter composed from indexable information (logger address and log topics)
     /// contained in each log entry from the receipt of each transaction in the transactions list;
@@ -49,13 +55,17 @@ pub struct Header {
     pub difficulty: U256,
     /// A scalar value equal to the number of ancestor blocks. The genesis block has a number of
     /// zero; formally Hi.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub number: BlockNumber,
     /// A scalar value equal to the current limit of gas expenditure per block; formally Hl.
-    pub gas_limit: u64,
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub gas_limit: u128,
     /// A scalar value equal to the total gas used in transactions in this block; formally Hg.
-    pub gas_used: u64,
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub gas_used: u128,
     /// A scalar value equal to the reasonable output of Unix’s time() at this block’s inception;
     /// formally Hs.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub timestamp: u64,
     /// A 256-bit hash which, combined with the
     /// nonce, proves that a sufficient amount of computation has been carried out on this block;
@@ -63,21 +73,45 @@ pub struct Header {
     pub mix_hash: B256,
     /// A 64-bit value which, combined with the mixhash, proves that a sufficient amount of
     /// computation has been carried out on this block; formally Hn.
-    pub nonce: u64,
+    pub nonce: B64,
     /// A scalar representing EIP1559 base fee which can move up or down each block according
     /// to a formula which is a function of gas used in parent block and gas target
     /// (block gas limit divided by elasticity multiplier) of parent block.
     /// The algorithm results in the base fee per gas increasing when blocks are
     /// above the gas target, and decreasing when blocks are below the gas target. The base fee per
     /// gas is burned.
-    pub base_fee_per_gas: Option<u64>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default,
+            with = "alloy_serde::quantity::opt",
+            skip_serializing_if = "Option::is_none"
+        )
+    )]
+    pub base_fee_per_gas: Option<u128>,
     /// The total amount of blob gas consumed by the transactions within the block, added in
     /// EIP-4844.
-    pub blob_gas_used: Option<u64>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default,
+            with = "alloy_serde::quantity::opt",
+            skip_serializing_if = "Option::is_none"
+        )
+    )]
+    pub blob_gas_used: Option<u128>,
     /// A running total of blob gas consumed in excess of the target, prior to the block. Blocks
     /// with above-target blob gas consumption increase this value, blocks with below-target blob
     /// gas consumption decrease it (bounded at 0). This was added in EIP-4844.
-    pub excess_blob_gas: Option<u64>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default,
+            with = "alloy_serde::quantity::opt",
+            skip_serializing_if = "Option::is_none"
+        )
+    )]
+    pub excess_blob_gas: Option<u128>,
     /// The hash of the parent beacon block's root is included in execution blocks, as proposed by
     /// EIP-4788.
     ///
@@ -85,7 +119,14 @@ pub struct Header {
     /// and more.
     ///
     /// The beacon roots contract handles root storage, enhancing Ethereum's functionalities.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
     pub parent_beacon_block_root: Option<B256>,
+    /// The Keccak 256-bit hash of the root node of the trie structure populated with each
+    /// [EIP-7685] request in the block body.
+    ///
+    /// [EIP-7685]: https://eips.ethereum.org/EIPS/eip-7685
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub requests_root: Option<B256>,
     /// An arbitrary byte array containing data relevant to this block. This must be 32 bytes or
     /// fewer; formally Hx.
     pub extra_data: Bytes,
@@ -93,7 +134,7 @@ pub struct Header {
 
 impl Default for Header {
     fn default() -> Self {
-        Header {
+        Self {
             parent_hash: Default::default(),
             ommers_hash: EMPTY_OMMER_ROOT_HASH,
             beneficiary: Default::default(),
@@ -108,12 +149,13 @@ impl Default for Header {
             timestamp: 0,
             extra_data: Default::default(),
             mix_hash: Default::default(),
-            nonce: 0,
+            nonce: B64::ZERO,
             base_fee_per_gas: None,
             withdrawals_root: None,
             blob_gas_used: None,
             excess_blob_gas: None,
             parent_beacon_block_root: None,
+            requests_root: None,
         }
     }
 }
@@ -144,11 +186,9 @@ impl Header {
     /// Checks if the header is empty - has no transactions and no ommers
     pub fn is_empty(&self) -> bool {
         let txs_and_ommers_empty = self.transaction_root_is_empty() && self.ommers_hash_is_empty();
-        if let Some(withdrawals_root) = self.withdrawals_root {
+        self.withdrawals_root.map_or(txs_and_ommers_empty, |withdrawals_root| {
             txs_and_ommers_empty && withdrawals_root == EMPTY_ROOT_HASH
-        } else {
-            txs_and_ommers_empty
-        }
+        })
     }
 
     /// Check if the ommers hash equals to empty hash list.
@@ -191,7 +231,7 @@ impl Header {
     /// Calculate base fee for next block according to the EIP-1559 spec.
     ///
     /// Returns a `None` if no base fee is set, no EIP-1559 support
-    pub fn next_block_base_fee(&self, base_fee_params: BaseFeeParams) -> Option<u64> {
+    pub fn next_block_base_fee(&self, base_fee_params: BaseFeeParams) -> Option<u128> {
         Some(calc_next_block_base_fee(
             self.gas_used,
             self.gas_limit,
@@ -204,7 +244,7 @@ impl Header {
     /// spec.
     ///
     /// Returns a `None` if no excess blob gas is set, no EIP-4844 support
-    pub fn next_block_excess_blob_gas(&self) -> Option<u64> {
+    pub fn next_block_excess_blob_gas(&self) -> Option<u128> {
         Some(calc_excess_blob_gas(self.excess_blob_gas?, self.blob_gas_used?))
     }
 
@@ -221,15 +261,16 @@ impl Header {
         mem::size_of::<Bloom>() + // logs bloom
         mem::size_of::<U256>() + // difficulty
         mem::size_of::<BlockNumber>() + // number
-        mem::size_of::<u64>() + // gas limit
-        mem::size_of::<u64>() + // gas used
+        mem::size_of::<u128>() + // gas limit
+        mem::size_of::<u128>() + // gas used
         mem::size_of::<u64>() + // timestamp
         mem::size_of::<B256>() + // mix hash
         mem::size_of::<u64>() + // nonce
-        mem::size_of::<Option<u64>>() + // base fee per gas
-        mem::size_of::<Option<u64>>() + // blob gas used
-        mem::size_of::<Option<u64>>() + // excess blob gas
+        mem::size_of::<Option<u128>>() + // base fee per gas
+        mem::size_of::<Option<u128>>() + // blob gas used
+        mem::size_of::<Option<u128>>() + // excess blob gas
         mem::size_of::<Option<B256>>() + // parent beacon block root
+        mem::size_of::<Option<B256>>() + // requests root
         self.extra_data.len() // extra data
     }
 
@@ -249,7 +290,7 @@ impl Header {
         length += self.timestamp.length();
         length += self.extra_data.length();
         length += self.mix_hash.length();
-        length += B64::new(self.nonce.to_be_bytes()).length();
+        length += self.nonce.length();
 
         if let Some(base_fee) = self.base_fee_per_gas {
             length += U256::from(base_fee).length();
@@ -282,15 +323,22 @@ impl Header {
             length += 1; // EMPTY LIST CODE
         }
 
-        // Encode parent beacon block root length. If new fields are added, the above pattern will
+        // Encode parent beacon block root length.
+        if let Some(parent_beacon_block_root) = self.parent_beacon_block_root {
+            length += parent_beacon_block_root.length();
+        }
+
+        // Encode requests root length.
+        //
+        // If new fields are added, the above pattern will
         // need to be repeated and placeholder length added. Otherwise, it's impossible to
         // tell _which_ fields are missing. This is mainly relevant for contrived cases
         // where a header is created at random, for example:
         //  * A header is created with a withdrawals root, but no base fee. Shanghai blocks are
         //    post-London, so this is technically not valid. However, a tool like proptest would
         //    generate a block like this.
-        if let Some(parent_beacon_block_root) = self.parent_beacon_block_root {
-            length += parent_beacon_block_root.length();
+        if let Some(requests_root) = self.requests_root {
+            length += requests_root.length();
         }
 
         length
@@ -316,7 +364,7 @@ impl Encodable for Header {
         self.timestamp.encode(out);
         self.extra_data.encode(out);
         self.mix_hash.encode(out);
-        B64::new(self.nonce.to_be_bytes()).encode(out);
+        self.nonce.encode(out);
 
         // Encode base fee. Put empty list if base fee is missing,
         // but withdrawals root is present.
@@ -357,15 +405,22 @@ impl Encodable for Header {
             out.put_u8(EMPTY_LIST_CODE);
         }
 
-        // Encode parent beacon block root. If new fields are added, the above pattern will need to
+        // Encode parent beacon block root.
+        if let Some(ref parent_beacon_block_root) = self.parent_beacon_block_root {
+            parent_beacon_block_root.encode(out);
+        }
+
+        // Encode requests root.
+        //
+        // If new fields are added, the above pattern will need to
         // be repeated and placeholders added. Otherwise, it's impossible to tell _which_
         // fields are missing. This is mainly relevant for contrived cases where a header is
         // created at random, for example:
         //  * A header is created with a withdrawals root, but no base fee. Shanghai blocks are
         //    post-London, so this is technically not valid. However, a tool like proptest would
         //    generate a block like this.
-        if let Some(ref parent_beacon_block_root) = self.parent_beacon_block_root {
-            parent_beacon_block_root.encode(out);
+        if let Some(ref requests_root) = self.requests_root {
+            requests_root.encode(out);
         }
     }
 
@@ -393,25 +448,26 @@ impl Decodable for Header {
             receipts_root: Decodable::decode(buf)?,
             logs_bloom: Decodable::decode(buf)?,
             difficulty: Decodable::decode(buf)?,
-            number: U256::decode(buf)?.to::<u64>(),
-            gas_limit: U256::decode(buf)?.to::<u64>(),
-            gas_used: U256::decode(buf)?.to::<u64>(),
+            number: u64::decode(buf)?,
+            gas_limit: u128::decode(buf)?,
+            gas_used: u128::decode(buf)?,
             timestamp: Decodable::decode(buf)?,
             extra_data: Decodable::decode(buf)?,
             mix_hash: Decodable::decode(buf)?,
-            nonce: u64::from_be_bytes(B64::decode(buf)?.0),
+            nonce: B64::decode(buf)?,
             base_fee_per_gas: None,
             withdrawals_root: None,
             blob_gas_used: None,
             excess_blob_gas: None,
             parent_beacon_block_root: None,
+            requests_root: None,
         };
 
         if started_len - buf.len() < rlp_head.payload_length {
             if buf.first().map(|b| *b == EMPTY_LIST_CODE).unwrap_or_default() {
                 buf.advance(1)
             } else {
-                this.base_fee_per_gas = Some(U256::decode(buf)?.to::<u64>());
+                this.base_fee_per_gas = Some(U256::decode(buf)?.to::<u128>());
             }
         }
 
@@ -429,7 +485,7 @@ impl Decodable for Header {
             if buf.first().map(|b| *b == EMPTY_LIST_CODE).unwrap_or_default() {
                 buf.advance(1)
             } else {
-                this.blob_gas_used = Some(U256::decode(buf)?.to::<u64>());
+                this.blob_gas_used = Some(U256::decode(buf)?.to::<u128>());
             }
         }
 
@@ -437,11 +493,18 @@ impl Decodable for Header {
             if buf.first().map(|b| *b == EMPTY_LIST_CODE).unwrap_or_default() {
                 buf.advance(1)
             } else {
-                this.excess_blob_gas = Some(U256::decode(buf)?.to::<u64>());
+                this.excess_blob_gas = Some(U256::decode(buf)?.to::<u128>());
             }
         }
 
-        // Decode parent beacon block root. If new fields are added, the above pattern will need to
+        // Decode parent beacon block root.
+        if started_len - buf.len() < rlp_head.payload_length {
+            this.parent_beacon_block_root = Some(B256::decode(buf)?);
+        }
+
+        // Decode requests root.
+        //
+        // If new fields are added, the above pattern will need to
         // be repeated and placeholders decoded. Otherwise, it's impossible to tell _which_
         // fields are missing. This is mainly relevant for contrived cases where a header is
         // created at random, for example:
@@ -460,5 +523,27 @@ impl Decodable for Header {
             });
         }
         Ok(this)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn header_serde() {
+        let raw = r#"{"parentHash":"0x0000000000000000000000000000000000000000000000000000000000000000","ommersHash":"0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347","beneficiary":"0x0000000000000000000000000000000000000000","stateRoot":"0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421","transactionsRoot":"0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421","receiptsRoot":"0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421","withdrawalsRoot":"0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421","logsBloom":"0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","difficulty":"0x0","number":"0x0","gasLimit":"0x0","gasUsed":"0x0","timestamp":"0x0","mixHash":"0x0000000000000000000000000000000000000000000000000000000000000000","nonce":"0x0000000000000000","baseFeePerGas":"0x1","extraData":"0x"}"#;
+        let header = Header {
+            base_fee_per_gas: Some(1),
+            withdrawals_root: Some(EMPTY_ROOT_HASH),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&header).unwrap();
+        assert_eq!(json, raw);
+
+        let decoded: Header = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, header);
     }
 }
